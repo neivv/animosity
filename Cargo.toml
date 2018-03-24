@@ -1,0 +1,22 @@
+[package]
+name = "animosity"
+version = "0.1.0"
+authors = ["Markus Heikkinen <ittevien@gmail.com>"]
+
+[profile.release]
+debug = 1
+
+[dependencies]
+byteorder = "1.2"
+cairo-rs = "0.4"
+ddsfile = "0.2.3"
+failure = "0.1.1"
+gio = "0.4"
+glib = "0.5"
+glium = "0.20.0"
+lazy_static = "1.0"
+log = "0.4"
+
+[dependencies.gtk]
+version = "0.4"
+features = ["v3_16"]
