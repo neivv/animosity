@@ -19,7 +19,7 @@ pub struct MainSd {
 trait ReadSeek: Read + Seek + Send { }
 impl<T: Read + Seek + Send> ReadSeek for T { }
 
-enum SpriteType {
+pub enum SpriteType {
     Ref(u32),
     Data(SpriteData),
 }
@@ -29,24 +29,27 @@ pub struct SpriteData {
     // The textures for each layer, they are not required to exist.
     textures: Vec<Option<Texture>>,
     pub unk2: u16,
-    pub unk3: u32,
+    pub unk3a: u16,
+    pub unk3b: u16,
 }
 
-struct Frame {
-    tex_x: u16,
-    tex_y: u16,
-    x_off: u16,
-    y_off: u16,
-    width: u16,
-    height: u16,
+pub struct Frame {
+    pub tex_x: u16,
+    pub tex_y: u16,
+    pub x_off: u16,
+    pub y_off: u16,
+    pub width: u16,
+    pub height: u16,
+    pub unk_x: u16,
+    pub unk_y: u16,
 }
 
 #[derive(Clone, Debug)]
-struct Texture {
-    offset: u32,
-    size: u32,
-    width: u16,
-    height: u16,
+pub struct Texture {
+    pub offset: u32,
+    pub size: u32,
+    pub width: u16,
+    pub height: u16,
 }
 
 const ANIM_MAGIC: u32 = 0x4d494e41;
@@ -83,7 +86,8 @@ impl Anim {
             return Err(format_err!("No frames for a single-entry file"));
         }
         let unk2 = r.read_u16::<LE>()?;
-        let unk3 = r.read_u32::<LE>()?;
+        let unk3a = r.read_u16::<LE>()?;
+        let unk3b = r.read_u16::<LE>()?;
         let frame_arr_offset = r.read_u32::<LE>()?;
         let textures = read_textures(&mut r, layers as u32)?;
         r.seek(SeekFrom::Start(frame_arr_offset as u64))?;
@@ -92,7 +96,8 @@ impl Anim {
             frames,
             textures,
             unk2,
-            unk3,
+            unk3a,
+            unk3b,
         };
 
         Ok(Anim {
@@ -100,6 +105,14 @@ impl Anim {
             sprite,
             read: Box::new(r),
         })
+    }
+
+    pub fn layer_names(&self) -> &[String] {
+        &self.layer_names
+    }
+
+    pub fn sprite_data(&self) -> &SpriteData {
+        &self.sprite
     }
 
     pub fn texture(&mut self, layer: usize) -> Result<RgbaTexture, Error> {
@@ -150,7 +163,8 @@ impl MainSd {
                 sprites.push(SpriteType::Ref(ref_id));
             } else {
                 let unk2 = r.read_u16::<LE>()?;
-                let unk3 = r.read_u32::<LE>()?;
+                let unk3a = r.read_u16::<LE>()?;
+                let unk3b = r.read_u16::<LE>()?;
                 let frame_arr_offset = r.read_u32::<LE>()?;
                 let textures = read_textures(&mut r, layers as u32)
                     .with_context(|_| format!("Invalid image {:x}", i))?;
@@ -160,7 +174,8 @@ impl MainSd {
                     frames,
                     textures,
                     unk2,
-                    unk3,
+                    unk3a,
+                    unk3b,
                 }));
             }
         }
@@ -171,8 +186,12 @@ impl MainSd {
         })
     }
 
-    pub fn sprites(&self) -> MainSdSprites {
-        MainSdSprites(self, 0)
+    pub fn layer_names(&self) -> &[String] {
+        &self.layer_names
+    }
+
+    pub fn sprites(&self) -> &[SpriteType] {
+        &self.sprites
     }
 
     pub fn sprite_data(&self, sprite: usize) -> Option<&SpriteData> {
@@ -200,27 +219,62 @@ impl MainSd {
     }
 }
 
-fn read_texture<R: Read>(mut read: R, texture: &Texture) -> Result<RgbaTexture, Error> {
-    let dds = Dds::read(&mut read)
-        .map_err(|e| format_err!("Unable to read DDS: {}", e))?;
-    let format = dds.get_d3d_format()
-        .ok_or_else(|| format_err!("Unsupported DDS format"))?;
-    let data = dds.get_data(0)
-        .map_err(|e| format_err!("Unable to get DDS data: {}", e))?;
-    let data = match format {
-        D3DFormat::DXT1 => {
-            decode_dxt1(&data, texture.width as u32, texture.height as u32)?
+impl SpriteData {
+    pub fn frames(&self) -> &[Frame] {
+        &self.frames
+    }
+
+    pub fn texture_sizes(&self) -> &[Option<Texture>] {
+        &self.textures
+    }
+}
+
+fn read_texture<R: ReadSeek>(mut read: R, texture: &Texture) -> Result<RgbaTexture, Error> {
+    const DDS_MAGIC: u32 = 0x20534444;
+    const BMP_MAGIC: u32 = 0x20504d42;
+    let magic = read.read_u32::<LE>()?;
+    if magic == DDS_MAGIC {
+        read.seek(SeekFrom::Current(-4))?;
+        let dds = Dds::read(&mut read)
+            .map_err(|e| format_err!("Unable to read DDS: {}", e))?;
+        let format = dds.get_d3d_format()
+            .ok_or_else(|| format_err!("Unsupported DDS format"))?;
+        let data = dds.get_data(0)
+            .map_err(|e| format_err!("Unable to get DDS data: {}", e))?;
+        let data = match format {
+            D3DFormat::DXT1 => {
+                decode_dxt1(&data, texture.width as u32, texture.height as u32)?
+            }
+            D3DFormat::DXT5 => {
+                decode_dxt5(&data, texture.width as u32, texture.height as u32)?
+            }
+            _ => return Err(format_err!("Unsupported DDS format {:?}", format)),
+        };
+        Ok(RgbaTexture {
+            data,
+            width: texture.width as u32,
+            height: texture.height as u32,
+        })
+    } else if magic == BMP_MAGIC {
+        // Raw monochrome bitmap, 0x00 or 0xff per pixel
+        let mut pixels = vec![0; texture.width as usize * texture.height as usize];
+        read.read_exact(&mut pixels[..])?;
+        let mut data = Vec::with_capacity(pixels.len() * 4);
+        for p in pixels {
+            if p == 0 {
+                data.write_u32::<LE>(0).unwrap();
+            } else {
+                data.write_u32::<LE>(!0).unwrap();
+            }
         }
-        D3DFormat::DXT5 => {
-            decode_dxt5(&data, texture.width as u32, texture.height as u32)?
-        }
-        _ => return Err(format_err!("Unsupported DDS format {:?}", format)),
-    };
-    Ok(RgbaTexture {
-        data,
-        width: texture.width as u32,
-        height: texture.height as u32,
-    })
+        Ok(RgbaTexture {
+            data,
+            width: texture.width as u32,
+            height: texture.height as u32,
+        })
+    } else {
+        return Err(format_err!("Unknown texture format {:08x}", magic));
+    }
 }
 
 /// Returns the bytes with alpha multiplied
@@ -408,23 +462,8 @@ fn read_frames<R: Read>(mut r: R, count: u16) -> Result<Vec<Frame>, Error> {
             y_off: r.read_u16::<LE>()?,
             width: r.read_u16::<LE>()?,
             height: r.read_u16::<LE>()?,
+            unk_x: r.read_u16::<LE>()?,
+            unk_y: r.read_u16::<LE>()?,
         })
     }).collect()
 }
-
-pub struct MainSdSprites<'a>(&'a MainSd, u32);
-
-impl<'a> Iterator for MainSdSprites<'a> {
-    type Item = Sprite;
-    fn next(&mut self) -> Option<Self::Item> {
-        let sprite_count = self.0.sprites.len() as u32;
-        if self.1 >= sprite_count {
-            None
-        } else {
-            self.1 += 1;
-            Some(Sprite)
-        }
-    }
-}
-
-pub struct Sprite;

@@ -9,8 +9,10 @@ debug = 1
 [dependencies]
 byteorder = "1.2"
 cairo-rs = "0.4"
+cgmath = "0.16"
 ddsfile = "0.2.3"
 failure = "0.1.1"
+gdk = "0.8"
 gio = "0.4"
 glib = "0.5"
 glium = "0.20.0"
@@ -19,4 +21,4 @@ log = "0.4"
 
 [dependencies.gtk]
 version = "0.4"
-features = ["v3_16"]
+features = ["v3_22_20"]

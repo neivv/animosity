@@ -20,6 +20,15 @@ pub struct Vertex {
 
 implement_vertex!(Vertex, pos, tex);
 
+#[derive(Copy, Clone, Debug)]
+pub struct LineVertex {
+    pub pos: [f32; 2],
+    pub color: [f32; 4],
+    pub ty: u8,
+}
+
+implement_vertex!(LineVertex, pos, color, ty);
+
 impl Context {
     pub fn new(width: u32, height: u32) -> Context {
         let stride = width.next_power_of_two();
@@ -62,20 +71,40 @@ impl Context {
         (self.render_target.as_surface(), &self.facade)
     }
 
+    pub fn resize_buf(&mut self, width: u32, height: u32) {
+        let stride = width.next_power_of_two();
+        self.width = width;
+        if stride == self.stride && height == self.height {
+            return;
+        }
+        self.stride = stride;
+        self.height = height;
+        self.render_target = Texture2d::empty(&self.facade, stride, height)
+            .expect("Unable to create texture");
+    }
+
     pub fn framebuf_bytes(&self) -> (Vec<u8>, u32, u32) {
         let (width, height) = self.render_target.dimensions();
         let mut buffer = self.render_target.read_to_pixel_buffer();
-        let bytes = buffer.map_read().to_owned();
+        let mut bytes = buffer.map_read().to_owned();
+        while bytes.len() & 0xf != 0 {
+            bytes.push((0, 0, 0, 0));
+        }
         let len = bytes.len() * 4;
         let mut result = Vec::with_capacity(len);
         unsafe {
-            let mut ptr = result.as_mut_ptr();
-            for (r, g, b, a) in bytes {
-                *ptr = b;
-                *ptr.offset(1) = g;
-                *ptr.offset(2) = r;
-                *ptr.offset(3) = a;
-                ptr = ptr.offset(4);
+            let mut out = result.as_mut_ptr();
+            let mut input = bytes.as_ptr();
+            for _ in 0..bytes.len() / 0x10 {
+                for _ in 0..0x10 {
+                    let (r, g, b, a) = *input;
+                    *out = b;
+                    *out.offset(1) = g;
+                    *out.offset(2) = r;
+                    *out.offset(3) = a;
+                    out = out.offset(4);
+                    input = input.offset(1);
+                }
             }
             result.set_len(len);
         }

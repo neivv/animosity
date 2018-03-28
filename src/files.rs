@@ -1,13 +1,16 @@
-use std::fs::File;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use failure::Error;
 
 use anim;
+use ::SpriteType;
 
 pub struct Files {
     sprites: Vec<SpriteFiles>,
     mainsd_anim: Option<(PathBuf, anim::MainSd)>,
+    root_path: Option<PathBuf>,
+    open_files: Vec<(anim::Anim, usize, bool)>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,8 +31,52 @@ pub struct AnimFiles {
     pub name: String,
 }
 
+pub struct File<'a> {
+    location: FileLocation<'a>,
+}
+
+pub enum FileLocation<'a> {
+    MainSd(usize, &'a mut anim::MainSd),
+    Separate(&'a mut anim::Anim),
+}
+
+impl<'a> File<'a> {
+    pub fn texture(&mut self, layer: usize) -> Result<anim::RgbaTexture, Error> {
+        Ok(match self.location {
+            FileLocation::MainSd(sprite, ref mut mainsd) => mainsd.texture(sprite, layer)?,
+            FileLocation::Separate(ref mut file) => file.texture(layer)?,
+        })
+    }
+
+    pub fn sprite_data(&self) -> Option<&anim::SpriteData> {
+        match self.location {
+            FileLocation::MainSd(sprite, ref mainsd) => mainsd.sprite_data(sprite),
+            FileLocation::Separate(ref file) => Some(file.sprite_data()),
+        }
+    }
+
+    pub fn layer_names(&self) -> &[String] {
+        match self.location {
+            FileLocation::MainSd(_sprite, ref mainsd) => mainsd.layer_names(),
+            FileLocation::Separate(ref file) => file.layer_names(),
+        }
+    }
+
+    pub fn image_ref(&self) -> Option<u32> {
+        match self.location {
+            FileLocation::MainSd(sprite, ref mainsd) => {
+                mainsd.sprites().get(sprite).and_then(|x| match *x {
+                    anim::SpriteType::Ref(x) => Some(x),
+                    anim::SpriteType::Data(_) => None,
+                })
+            }
+            FileLocation::Separate(..) => None,
+        }
+    }
+}
+
 fn load_mainsd(path: &Path) -> Result<anim::MainSd, Error> {
-    let file = File::open(path)?;
+    let file = fs::File::open(path)?;
     anim::MainSd::read(file)
 }
 
@@ -38,7 +85,13 @@ impl Files {
         Files {
             sprites: Vec::new(),
             mainsd_anim: None,
+            root_path: None,
+            open_files: Vec::new(),
         }
+    }
+
+    pub fn root_path(&self) -> Option<&Path> {
+        self.root_path.as_ref().map(|x| &**x)
     }
 
     /// Tries to load an entire anim tree structure, if files seem to be laid out like that.
@@ -54,7 +107,7 @@ impl Files {
                     None
                 }
             };
-            let sprite_count = mainsd_anim.as_ref().map(|x| x.1.sprites().count())
+            let sprite_count = mainsd_anim.as_ref().map(|x| x.1.sprites().len())
                 .unwrap_or(999);
             Ok(Files {
                 sprites: (0..sprite_count as u32).map(|i| {
@@ -72,29 +125,53 @@ impl Files {
                     })
                 }).collect(),
                 mainsd_anim,
+                root_path: Some(root.into()),
+                open_files: Vec::new(),
             })
         } else {
             match is_mainsd(one_filename) {
                 true => {
                     let mainsd = load_mainsd(one_filename)?;
                     Ok(Files {
-                        sprites: mainsd.sprites().enumerate().map(|(i, _)| {
+                        sprites: (0..mainsd.sprites().len()).map(|i| {
                             SpriteFiles::MainSdOnly {
                                 image_id: i as u32,
                                 name: image_name(i as u32),
                             }
                         }).collect(),
                         mainsd_anim: Some((one_filename.into(), mainsd)),
+                        root_path: Some(one_filename.into()),
+                        open_files: Vec::new(),
                     })
                 }
                 false => {
                     Ok(Files {
                         sprites: vec![SpriteFiles::SingleFile(one_filename.into())],
                         mainsd_anim: None,
+                        root_path: Some(one_filename.into()),
+                        open_files: Vec::new(),
                     })
                 }
             }
         }
+    }
+
+    pub fn file<'a>(
+        &'a mut self,
+        sprite: usize,
+        ty: SpriteType
+    ) -> Result<Option<File<'a>>, Error> {
+        match ty {
+            SpriteType::Sd => Ok(self.mainsd_anim.as_mut().map(|x| File {
+                location: FileLocation::MainSd(sprite, &mut x.1)
+            })),
+            SpriteType::Hd => self.hd(sprite),
+            SpriteType::Hd2 => self.hd2(sprite),
+        }
+    }
+
+    pub fn close_opened(&mut self) {
+        self.open_files.clear();
     }
 
     pub fn sprites(&self) -> &[SpriteFiles] {
@@ -105,7 +182,24 @@ impl Files {
         self.mainsd_anim.as_ref().map(|x| &x.1)
     }
 
-    fn hd_or_hd2(&mut self, sprite: usize, hd2: bool) -> Result<Option<anim::Anim>, Error> {
+    pub fn has_sprite(&mut self, sprite: usize, ty: SpriteType) -> bool {
+        self.sprites.get(sprite)
+            .map(|s| match *s {
+                SpriteFiles::AnimSet(ref files) => match ty {
+                    SpriteType::Hd => files.hd_filename.is_file(),
+                    SpriteType::Hd2 => files.hd2_filename.is_file(),
+                    SpriteType::Sd => self.mainsd_anim.is_some(),
+                },
+                _ => false,
+            }).unwrap_or(false)
+    }
+
+    fn hd_or_hd2<'a>(&'a mut self, sprite: usize, hd2: bool) -> Result<Option<File<'a>>, Error> {
+        if let Some(index) = self.open_files.iter().position(|x| x.1 == sprite && x.2 == hd2) {
+            return Ok(Some(File {
+                location: FileLocation::Separate(&mut self.open_files[index].0),
+            }));
+        }
         let file = {
             let path = self.sprites.get(sprite)
                 .and_then(|s| match *s {
@@ -122,22 +216,21 @@ impl Files {
                 },
                 None => return Ok(None)
             };
-            File::open(path)?
+            fs::File::open(path)?
         };
         let anim = anim::Anim::read(file)?;
-        Ok(Some(anim))
+        self.open_files.push((anim, sprite, hd2));
+        Ok(Some(File {
+            location: FileLocation::Separate(&mut self.open_files.last_mut().unwrap().0)
+        }))
     }
 
-    pub fn hd(&mut self, sprite: usize) -> Result<Option<anim::Anim>, Error> {
+    pub fn hd<'a>(&'a mut self, sprite: usize) -> Result<Option<File<'a>>, Error> {
         self.hd_or_hd2(sprite, false)
     }
 
-    pub fn hd2(&mut self, sprite: usize) -> Result<Option<anim::Anim>, Error> {
+    pub fn hd2<'a>(&'a mut self, sprite: usize) -> Result<Option<File<'a>>, Error> {
         self.hd_or_hd2(sprite, true)
-    }
-
-    pub fn mainsd_mut(&mut self) -> Option<&mut anim::MainSd> {
-        self.mainsd_anim.as_mut().map(|x| &mut x.1)
     }
 }
 
