@@ -3,13 +3,13 @@ extern crate cairo;
 extern crate cgmath;
 extern crate ddsfile;
 #[macro_use] extern crate failure;
-#[macro_use] extern crate lazy_static;
-#[macro_use] extern crate log;
+extern crate fern;
 extern crate gdk;
 extern crate gio;
 extern crate glib;
 #[macro_use] extern crate glium;
 extern crate gtk;
+#[macro_use] extern crate log;
 
 mod anim;
 mod gl;
@@ -18,9 +18,9 @@ mod files;
 mod shaders;
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::rc::Rc;
 
@@ -39,7 +39,26 @@ use glium::vertex::VertexBuffer;
 use files::SpriteFiles;
 use int_entry::{IntEntry, IntSize};
 
+fn init_log() -> Result<(), fern::InitError> {
+    if cfg!(debug_assertions) {
+        fern::Dispatch::new()
+            .format(|out, message, record| {
+                out.finish(format_args!(
+                    "[{}][{}] {}",
+                    record.target(),
+                    record.level(),
+                    message
+                ))
+            })
+            .level(log::LevelFilter::Debug)
+            .chain(std::io::stdout())
+            .apply()?;
+    }
+    Ok(())
+}
+
 fn main() {
+    let _ = init_log();
     let app = gtk::Application::new("a.b", gio::ApplicationFlags::empty())
         .unwrap_or_else(|e| panic!("Couldn't create app: {}", e));
     app.connect_startup(|app| {
@@ -59,7 +78,7 @@ fn main() {
 }
 
 struct State {
-    files: Arc<Mutex<files::Files>>,
+    files: Rc<RefCell<files::Files>>,
 }
 
 struct Ui {
@@ -68,15 +87,12 @@ struct Ui {
     info: Arc<SpriteInfo>,
 }
 
-lazy_static! {
-    static ref STATE: Mutex<State> = Mutex::new(State {
-        files: Arc::new(Mutex::new(files::Files::empty())),
-    });
-}
-
 thread_local! {
     static UI: RefCell<Option<Rc<Ui>>> = RefCell::new(None);
     static CSS: gtk::CssProvider = init_css_provider();
+    static STATE: RefCell<State> = RefCell::new(State {
+        files: Rc::new(RefCell::new(files::Files::empty())),
+    });
 }
 
 fn ui() -> Rc<Ui> {
@@ -116,9 +132,9 @@ impl Ui {
 fn title(path: Option<&Path>, dirty: bool) -> String {
     if let Some(path) = path {
         if dirty {
-            format!("Animosity {} ({}*)", env!("CARGO_PKG_VERSION"), path.to_string_lossy())
+            format!("{}* - Animosity {}", path.to_string_lossy(), env!("CARGO_PKG_VERSION"))
         } else {
-            format!("Animosity {} ({})", env!("CARGO_PKG_VERSION"), path.to_string_lossy())
+            format!("{} - Animosity {}", path.to_string_lossy(), env!("CARGO_PKG_VERSION"))
         }
     } else {
         format!("Animosity {}", env!("CARGO_PKG_VERSION"))
@@ -173,7 +189,6 @@ impl ScrolledList {
 
 struct SpriteList {
     list: ScrolledList,
-    linked_info: Arc<SpriteInfo>,
 }
 
 impl SpriteList {
@@ -192,7 +207,6 @@ impl SpriteList {
         });
         SpriteList {
             list,
-            linked_info,
         }
     }
 
@@ -205,10 +219,10 @@ impl SpriteList {
 struct SpriteValues {
     bx: gtk::Box,
     ref_enable: gtk::CheckButton,
-    ref_index: IntEntry,
-    unk2: IntEntry,
-    unk3a: IntEntry,
-    unk3b: IntEntry,
+    ref_index: Arc<IntEntry>,
+    unk2: Arc<IntEntry>,
+    unk3a: Arc<IntEntry>,
+    unk3b: Arc<IntEntry>,
     texture_dimensions: gtk::Label,
     frame_count_label: gtk::Label,
 }
@@ -224,7 +238,7 @@ impl SpriteValues {
         texture_dimensions.set_width_chars(20);
         let frame_count_label = gtk::Label::new(Some("0 frames"));
         let unk2_label = gtk::Label::new(Some("Unknown2"));
-        let unk2 = IntEntry::new(IntSize::Int32);
+        let unk2 = IntEntry::new(IntSize::Int16);
         let unk3_label = gtk::Label::new(Some("Unknown3"));
         let unk3_bx = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let unk3a = IntEntry::new(IntSize::Int16);
@@ -253,41 +267,60 @@ impl SpriteValues {
     }
 
     fn connect_actions(&self, sprite_actions: &gio::SimpleActionGroup) {
+        let disable_check = Rc::new(Cell::new(false));
         if let Some(a) = lookup_action(sprite_actions, "enable_ref") {
             let check = self.ref_enable.clone();
             let i = self.ref_index.clone();
             <_ as gio::SimpleActionExt>::connect_property_enabled_notify(&a, move |s| {
                 let enabled = s.get_enabled();
+                check.set_sensitive(enabled);
+                i.frame.set_sensitive(enabled);
                 if !enabled {
                     check.set_active(false);
                     i.clear();
                 }
-                check.set_sensitive(enabled);
-                i.frame.set_sensitive(enabled);
             });
             let i = self.ref_index.clone();
             let check = self.ref_enable.clone();
+            let u2 = self.unk2.clone();
+            let u3a = self.unk3a.clone();
+            let u3b = self.unk3b.clone();
+            let disable_check = disable_check.clone();
             a.connect_activate(move |_, param| {
                 if let Some(enabled) = param.as_ref().and_then(|x| x.get::<bool>()) {
+                    if check.get_active() != enabled {
+                        disable_check.set(true);
+                        check.set_active(enabled);
+                        disable_check.set(false);
+                    }
+                    i.frame.set_sensitive(enabled);
                     if !enabled {
                         i.clear();
                     }
-                    if check.get_active() != enabled {
-                        check.set_active(enabled);
-                    }
-                    i.frame.set_sensitive(enabled);
+                    u2.frame.set_sensitive(!enabled);
+                    u3a.frame.set_sensitive(!enabled);
+                    u3b.frame.set_sensitive(!enabled);
                 }
             });
+        }
+        if let Some(a) = lookup_action(sprite_actions, "edit_enable_ref") {
             self.ref_enable.connect_toggled(move |s| {
-                let enabled: bool = s.get_active();
-                let variant = enabled.to_variant();
-                a.activate(Some(&variant));
+                if disable_check.get() == false {
+                    let enabled: bool = s.get_active();
+                    let variant = enabled.to_variant();
+                    a.activate(Some(&variant));
+                }
             });
         }
-        self.ref_index.connect_actions(sprite_actions, "init_ref_img", "edit_ref_img");
-        self.unk2.connect_actions(sprite_actions, "init_unk2", "edit_unk2");
-        self.unk3a.connect_actions(sprite_actions, "init_unk3a", "edit_unk3a");
-        self.unk3b.connect_actions(sprite_actions, "init_unk3b", "edit_unk3b");
+        IntEntry::connect_actions(
+            &self.ref_index,
+            sprite_actions,
+            "init_ref_img",
+            "edit_ref_img",
+        );
+        IntEntry::connect_actions(&self.unk2, sprite_actions, "init_unk2", "edit_unk2");
+        IntEntry::connect_actions(&self.unk3a, sprite_actions, "init_unk3a", "edit_unk3a");
+        IntEntry::connect_actions(&self.unk3b, sprite_actions, "init_unk3b", "edit_unk3b");
         let i = self.ref_index.clone();
         let u2 = self.unk2.clone();
         let u3a = self.unk3a.clone();
@@ -338,7 +371,7 @@ struct SpriteSelector {
     list: ScrolledList,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum SpriteType {
     Sd,
     Hd,
@@ -525,13 +558,14 @@ fn sprite_render_program(gl: &mut gl::Context) -> glium::program::Program {
 struct SpriteInfo {
     bx: gtk::Box,
     file_list: gtk::TextBuffer,
-    files: Arc<Mutex<files::Files>>,
+    files: Rc<RefCell<files::Files>>,
     sprite_actions: gio::SimpleActionGroup,
     sprite_index: AtomicUsize,
     selected_layer: AtomicUsize,
     selector: SpriteSelector,
-    selected_type: Mutex<SpriteType>,
+    selected_type: Cell<SpriteType>,
     draw_area: gtk::DrawingArea,
+    draw_clear_requests: RefCell<Vec<TextureId>>,
 }
 
 fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::SimpleAction> {
@@ -539,7 +573,7 @@ fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::S
 }
 
 impl SpriteInfo {
-    fn new(file_shared: Arc<Mutex<files::Files>>) -> Arc<SpriteInfo> {
+    fn new(file_shared: Rc<RefCell<files::Files>>) -> Arc<SpriteInfo> {
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let sprite_actions = gio::SimpleActionGroup::new();
         bx.insert_action_group("sprite", Some(&sprite_actions));
@@ -568,16 +602,17 @@ impl SpriteInfo {
             sprite_index: AtomicUsize::new(0),
             selected_layer: AtomicUsize::new(0),
             selector,
-            selected_type: Mutex::new(SpriteType::Sd),
+            selected_type: Cell::new(SpriteType::Sd),
             draw_area: draw_area.clone(),
+            draw_clear_requests: RefCell::new(Vec::new()),
         });
         SpriteInfo::create_sprite_actions(&result, &result.sprite_actions.clone().upcast());
         values.connect_actions(&result.sprite_actions);
 
         let this = result.clone();
-        let gl: Arc<Mutex<Option<(gl::Context, DrawParams)>>> = Arc::new(Mutex::new(None));
+        let gl: Rc<RefCell<Option<(gl::Context, DrawParams)>>> = Rc::new(RefCell::new(None));
         draw_area.connect_draw(move |s, cairo| {
-            let mut gl = gl.lock().unwrap();
+            let mut gl = gl.borrow_mut();
             let rect = s.get_allocation();
             let &mut (ref mut gl, ref mut draw_params) = gl.get_or_insert_with(|| {
                 let mut gl = gl::Context::new(rect.width as u32, rect.height as u32);
@@ -602,6 +637,13 @@ impl SpriteInfo {
                     lines,
                 })
             });
+            {
+                let mut clear_reqs = this.draw_clear_requests.borrow_mut();
+                for tex_id in clear_reqs.drain(..) {
+                    draw_params.cached_textures.retain(|x| x.1 != tex_id);
+                    draw_params.lines.texture_lines.0.retain(|x| x.0 != tex_id);
+                }
+            }
             gl.resize_buf(rect.width as u32, rect.height as u32);
             let result = {
                 let size = gl.buf_dimensions();
@@ -644,9 +686,19 @@ impl SpriteInfo {
         result
     }
 
+    fn on_dirty_update<F: Fn(bool) + 'static>(&self, fun: F) {
+        if let Some(a) = lookup_action(&self.sprite_actions, "is_dirty") {
+            a.connect_activate(move |_, param| {
+                if let Some(val) = param.as_ref().and_then(|x| x.get::<bool>()) {
+                    fun(val);
+                }
+            });
+        }
+    }
+
     fn tex_id(&self) -> TextureId {
         let index = self.sprite_index.load(Ordering::SeqCst);
-        let selected_type = self.selected_type.lock().unwrap().clone();
+        let selected_type = self.selected_type.get();
         let layer = self.selected_layer.load(Ordering::SeqCst);
         TextureId(index, selected_type, layer)
     }
@@ -696,11 +748,12 @@ impl SpriteInfo {
 
         buf.clear_color(0.0, 0.0, 0.0, 1.0);
         let tex_id = self.tex_id();
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.try_borrow_mut()?;
         let mut file = match files.file(tex_id.0, tex_id.1)? {
             Some(s) => s,
             None => return Ok(()),
         };
+
         let texture = self.sprite_texture(facade, &mut draw_params.cached_textures, &mut file)?;
         if let Some(texture) = texture {
             let glium_params = glium::draw_parameters::DrawParameters {
@@ -754,8 +807,8 @@ impl SpriteInfo {
                 let red = Color(1.0, 0.0, 0.0, 1.0);
                 let green = Color(0.0, 1.0, 0.0, 1.0);
                 result.push((Rect::new(0, 0, texture.width(), texture.height()), red, 0));
-                if let Some(o) = file.sprite_data() {
-                    for f in o.frames() {
+                if let Some(frames) = file.frames() {
+                    for f in frames {
                         let rect = Rect::new(
                             f.tex_x as u32 / div,
                             f.tex_y as u32 / div,
@@ -811,19 +864,19 @@ impl SpriteInfo {
         }
         let s = this.clone();
         action(group, "select_sd", false, None, move |_, _| {
-            *s.selected_type.lock().unwrap() = SpriteType::Sd;
+            s.selected_type.set(SpriteType::Sd);
             s.changed_type_from_event();
             s.draw_area.queue_draw();
         });
         let s = this.clone();
         action(group, "select_hd", false, None, move |_, _| {
-            *s.selected_type.lock().unwrap() = SpriteType::Hd;
+            s.selected_type.set(SpriteType::Hd);
             s.changed_type_from_event();
             s.draw_area.queue_draw();
         });
         let s = this.clone();
         action(group, "select_hd2", false, None, move |_, _| {
-            *s.selected_type.lock().unwrap() = SpriteType::Hd2;
+            s.selected_type.set(SpriteType::Hd2);
             s.changed_type_from_event();
             s.draw_area.queue_draw();
         });
@@ -834,9 +887,21 @@ impl SpriteInfo {
                 s.draw_area.queue_draw();
             }
         });
+        let s = this.clone();
+        action(group, "edit_enable_ref", true, Some("b"), move |_, param| {
+            if let Some(value) = param.as_ref().and_then(|x| x.get::<bool>()) {
+                s.set_ref_enabled(value);
+            }
+        });
         action(group, "enable_ref", false, Some("b"), move |_, _| {
         });
         action(group, "init_ref_img", true, Some("u"), move |_, _| {
+        });
+        let s = this.clone();
+        action(group, "edit_ref_img", true, Some("u"), move |_, param| {
+            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+                s.set_ref_img(value);
+            }
         });
         action(group, "init_unk2", true, Some("u"), move |_, _| {
         });
@@ -844,17 +909,117 @@ impl SpriteInfo {
         });
         action(group, "init_unk3b", true, Some("u"), move |_, _| {
         });
+        let s = this.clone();
+        action(group, "edit_unk2", true, Some("u"), move |_, param| {
+            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+                s.update_active_file(|x, _| {
+                    x.unk2 = value as u16;
+                });
+            }
+        });
+        let s = this.clone();
+        action(group, "edit_unk3a", true, Some("u"), move |_, param| {
+            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+                s.update_active_file(|x, _| {
+                    x.unk3a = value as u16;
+                });
+            }
+        });
+        let s = this.clone();
+        action(group, "edit_unk3b", true, Some("u"), move |_, param| {
+            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+                s.update_active_file(|x, _| {
+                    x.unk3b = value as u16;
+                });
+            }
+        });
         action(group, "sprite_exists", true, Some("b"), move |_, _| {
         });
         action(group, "texture_size", true, Some("s"), move |_, _| {
         });
         action(group, "frame_count", true, Some("u"), move |_, _| {
         });
+        action(group, "is_dirty", true, Some("b"), move |_, _| {
+        });
+    }
+
+    fn set_ref_enabled(&self, enabled: bool) {
+        let dirty;
+        {
+            let tex_id = self.tex_id();
+            if tex_id.1 != SpriteType::Sd {
+                warn!("Changing ref for non-sd sprite");
+                return;
+            }
+            let mut files = match self.files.try_borrow_mut() {
+                Ok(o) => o,
+                _ => return,
+            };
+            files.set_ref_enabled(tex_id.0, tex_id.1, enabled);
+            dirty = files.has_changes();
+            self.draw_clear_requests.borrow_mut().push(tex_id);
+            // To re-read the other fields
+            let mut file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
+                error!("Couldn't open {:?}: {}", tex_id, e);
+                None
+            });
+            self.changed_ty(tex_id, &mut file);
+        }
+        if let Some(a) = lookup_action(&self.sprite_actions, "is_dirty") {
+            a.activate(Some(&dirty.to_variant()));
+        }
+    }
+
+    fn set_ref_img(&self, image: u32) {
+        let dirty;
+        {
+            let tex_id = self.tex_id();
+            if tex_id.1 != SpriteType::Sd {
+                warn!("Changing ref for non-sd sprite");
+                return;
+            }
+            let mut files = match self.files.try_borrow_mut() {
+                Ok(o) => o,
+                _ => return,
+            };
+            files.set_ref_img(tex_id.0, tex_id.1, image);
+            dirty = files.has_changes();
+            self.draw_clear_requests.borrow_mut().push(tex_id);
+            let mut file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
+                error!("Couldn't open {:?}: {}", tex_id, e);
+                None
+            });
+            self.changed_ty(tex_id, &mut file);
+        }
+        if let Some(a) = lookup_action(&self.sprite_actions, "is_dirty") {
+            a.activate(Some(&dirty.to_variant()));
+        }
+    }
+
+    /// Should be only called from global event handling context.
+    /// The usize is layer id
+    fn update_active_file<F: FnOnce(&mut anim::SpriteValues, usize)>(&self, fun: F) {
+        let dirty;
+        {
+            let tex_id = self.tex_id();
+            let mut files = match self.files.try_borrow_mut() {
+                Ok(o) => o,
+                _ => return,
+            };
+            files.update_file(tex_id.0, tex_id.1, |f| fun(f, tex_id.2));
+            dirty = files.has_changes();
+        }
+        if let Some(a) = lookup_action(&self.sprite_actions, "is_dirty") {
+            a.activate(Some(&dirty.to_variant()));
+        }
     }
 
     fn changed_type_from_event(&self) {
         let tex_id = self.tex_id();
-        let mut files = self.files.lock().unwrap();
+        let mut files = match self.files.try_borrow_mut() {
+            Ok(o) => o,
+            _ => return,
+        };
         let mut file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
             error!("Couldn't open {:?}: {}", tex_id, e);
             None
@@ -868,6 +1033,8 @@ impl SpriteInfo {
         if let Some(ref mut file) = *file {
             let variant = true.to_variant();
             self.sprite_actions.activate_action("sprite_exists", Some(&variant));
+            let sprite_data = file.sprite_values();
+            let sprite_data = sprite_data.as_ref();
             if let Some(a) = lookup_action(&self.sprite_actions, "enable_ref") {
                 if ty == SpriteType::Sd {
                     a.set_enabled(true);
@@ -880,14 +1047,12 @@ impl SpriteInfo {
                         a.activate(Some(&false.to_variant()));
                     }
                 } else {
+                    a.activate(Some(&false.to_variant()));
                     a.set_enabled(false);
                 }
             }
-            let sprite_data = file.sprite_data();
             let variant = {
-                let tex_sizes = sprite_data
-                    .and_then(|x| x.texture_sizes().get(tex_id.2))
-                    .and_then(|x| x.as_ref());
+                let tex_sizes = file.texture_size(tex_id.2);
                 if let Some(t) = tex_sizes {
                     format!("{}x{}", t.width, t.height).to_variant()
                 } else {
@@ -903,7 +1068,7 @@ impl SpriteInfo {
                 let variant = (data.unk3b as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk3b", Some(&variant));
             }
-            let frame_count = sprite_data.map(|x| x.frames().len() as u32).unwrap_or(0);
+            let frame_count = file.frames().map(|x| x.len() as u32).unwrap_or(0);
             let variant = frame_count.to_variant();
             self.sprite_actions.activate_action("frame_count", Some(&variant));
         } else {
@@ -964,7 +1129,10 @@ impl SpriteInfo {
     fn select_sprite(&self, index: usize) {
         let has_mainsd;
         let sprite = {
-            let mut files = self.files.lock().unwrap();
+            let mut files = match self.files.try_borrow_mut() {
+                Ok(o) => o,
+                _ => return,
+            };
             files.close_opened();
             has_mainsd = files.mainsd().is_some();
             files.sprites().get(index).cloned()
@@ -992,7 +1160,10 @@ impl SpriteInfo {
                 self.file_list.set_text(&buf);
 
                 let tex_id = self.tex_id();
-                let mut files = self.files.lock().unwrap();
+                let mut files = match self.files.try_borrow_mut() {
+                    Ok(o) => o,
+                    _ => return,
+                };
                 let mut file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
                     error!("Couldn't open {:?}: {}", tex_id, e);
                     None
@@ -1018,7 +1189,9 @@ fn create_menu() -> gio::Menu {
 
     let with_accel = |name: &str, action: &str, accel: &str| {
         let item = gio::MenuItem::new(Some(name), Some(action));
-        item.set_attribute_value("accel", Some(&accel.to_variant()));
+        if accel != "" {
+            item.set_attribute_value("accel", Some(&accel.to_variant()));
+        }
         item
     };
 
@@ -1029,7 +1202,6 @@ fn create_menu() -> gio::Menu {
             let menu = gio::Menu::new();
             menu.append_item(&with_accel("_Open...", "app.open", "<Ctrl>O"));
             menu.append_item(&with_accel("_Save...", "app.save", "<Ctrl>S"));
-            menu.append(Some("Save _As..."), Some("app.saveas"));
             menu
         };
         menu.append_section(None, &file_actions);
@@ -1041,7 +1213,32 @@ fn create_menu() -> gio::Menu {
         menu.append_section(None, &exit);
         menu
     };
+    let sprite_menu = {
+        let menu = gio::Menu::new();
+        let export_actions = {
+            let menu = gio::Menu::new();
+            menu.append_item(&with_accel("_Export frames...", "app.export_frames", "<Ctrl>E"));
+            menu
+        };
+        menu.append_section(None, &export_actions);
+        let import_actions = {
+            let menu = gio::Menu::new();
+            menu.append_item(&with_accel("_Import frames...", "app.import_frames", "<Ctrl>I"));
+            menu
+        };
+        menu.append_section(None, &import_actions);
+        menu
+    };
     menu.append_submenu(Some("_File"), &file_menu);
+    menu.append_submenu(Some("_Sprite"), &sprite_menu);
+    if cfg!(debug_assertions) {
+        let debug_menu = {
+            let menu = gio::Menu::new();
+            menu.append_item(&with_accel("Write test", "app.debug_write", ""));
+            menu
+        };
+        menu.append_submenu(Some("_Debug"), &debug_menu);
+    }
     menu.freeze();
     menu
 }
@@ -1066,6 +1263,20 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
             open(&filename);
         }
     });
+    if cfg!(debug_assertions) {
+        action(app, "debug_write", true, move |_, _| {
+            let files = STATE.with(|x| {
+                let state = x.borrow();
+                state.files.clone()
+            });
+            let mut files = files.borrow_mut();
+            let out = std::fs::File::create("out/mainsd.anim").unwrap();
+            files.write_mainsd(out).unwrap();
+            let out = std::fs::File::create("out/main_028.anim").unwrap();
+            files.write_separate(out, 28, SpriteType::Hd).unwrap();
+            println!("Write test finished");
+        });
+    }
 }
 
 fn open(filename: &Path) {
@@ -1074,9 +1285,11 @@ fn open(filename: &Path) {
         Ok(f) => {
             ui.files_changed(&f);
             {
-                let state = STATE.lock().unwrap();
-                let mut files = state.files.lock().unwrap();
-                *files = f;
+                STATE.with(|x| {
+                    let state = x.borrow();
+                    let mut files = state.files.borrow_mut();
+                    *files = f;
+                });
             }
             ui.info.sprite_actions.activate_action("select_sd", None);
             ui.info.select_sprite(0);
@@ -1148,7 +1361,7 @@ fn create_ui(app: &gtk::Application) -> Ui {
 
     let box1 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let files = {
-        STATE.lock().unwrap().files.clone()
+        STATE.with(|x| x.borrow().files.clone())
     };
     let info = SpriteInfo::new(files);
     let list = SpriteList::new(info.clone());
@@ -1156,6 +1369,14 @@ fn create_ui(app: &gtk::Application) -> Ui {
     box1.pack_start(&info.widget(), true, true, 0);
     window.add(&box1);
 
+    let w = window.clone();
+    info.on_dirty_update(move |dirty| {
+        STATE.with(|x| {
+            let state = x.borrow();
+            let files = state.files.borrow();
+            w.set_title(&title(files.root_path(), dirty));
+        });
+    });
     window.set_title(&title(None, false));
     window.resize(800, 600);
     if let Some(style_ctx) = window.get_style_context() {

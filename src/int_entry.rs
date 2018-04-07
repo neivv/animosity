@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use gdk;
 use gio;
 use gtk;
@@ -7,15 +10,14 @@ use gtk::prelude::*;
 
 use ::lookup_action;
 
-#[derive(Clone)]
 pub struct IntEntry {
     pub entry: gtk::Entry,
     pub frame: gtk::Frame,
+    disable_edit_events: AtomicUsize,
 }
 
 pub enum IntSize {
     Int16,
-    Int32,
 }
 
 fn fix_text(text: &str) -> Option<String> {
@@ -30,10 +32,9 @@ fn fix_text(text: &str) -> Option<String> {
 }
 
 impl IntEntry {
-    pub fn new(size: IntSize) -> IntEntry {
+    pub fn new(size: IntSize) -> Arc<IntEntry> {
         let max_len = match size {
             IntSize::Int16 => 5,
-            IntSize::Int32 => 10,
         };
         let entry = gtk::Entry::new();
         entry.set_has_frame(false);
@@ -50,19 +51,20 @@ impl IntEntry {
             let css = ::get_css_provider();
             style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
         }
-        IntEntry {
+        Arc::new(IntEntry {
             entry,
             frame,
-        }
+            disable_edit_events: AtomicUsize::new(0),
+        })
     }
 
     pub fn connect_actions<A: IsA<gio::ActionMap>>(
-        &self,
+        this: &Arc<IntEntry>,
         actions: &A,
         init_action: &str,
         edit_action: &str,
     ) {
-        self.entry.connect_focus_out_event(|s, _| {
+        this.entry.connect_focus_out_event(|s, _| {
             let s = match s.clone().downcast::<gtk::Entry>() {
                 Ok(o) => o,
                 Err(_) => return Inhibit(false),
@@ -72,15 +74,11 @@ impl IntEntry {
             }
             Inhibit(false)
         });
-        self.entry.connect_key_press_event(|_s, key| {
+        this.entry.connect_key_press_event(|_s, key| {
             use gdk::enums::key;
 
             let modifier = key.get_state();
             let key = key.get_keyval();
-            match key {
-                key::Tab | key::ISO_Left_Tab => return Inhibit(false),
-                _ => (),
-            }
             let acceptable = key == key::BackSpace ||
                 key == key::Delete ||
                 key >= '0' as u8 as u32 && key <= '9' as u8 as u32 ||
@@ -89,25 +87,32 @@ impl IntEntry {
                 // EMIT CHANGE
                 Inhibit(false)
             } else {
-                println!("{}", key);
+                if key > 65000 {
+                    return Inhibit(false);
+                }
                 Inhibit(true)
             }
         });
-        let entry = self.entry.clone();
+        let s = this.clone();
         if let Some(a) = lookup_action(actions, init_action) {
             a.connect_activate(move |_, param| {
                 if let Some(val) = param.as_ref().and_then(|x| x.get::<u32>()) {
-                    entry.set_text(&val.to_string());
+                    s.disable_edit_events.fetch_add(1, Ordering::Relaxed);
+                    s.entry.set_text(&val.to_string());
+                    s.disable_edit_events.fetch_sub(1, Ordering::Relaxed);
                 }
             });
         } else {
             println!("NO ACTION {}", init_action);
         }
         if let Some(a) = lookup_action(actions, edit_action) {
-            self.entry.connect_property_text_notify(move |s| {
-                if let Some(text) = s.get_text() {
-                    if let Ok(i) = text.parse::<u32>() {
-                        a.change_state(&i.into());
+            let t = this.clone();
+            this.entry.connect_property_text_notify(move |s| {
+                if t.disable_edit_events.load(Ordering::Relaxed) == 0 {
+                    if let Some(text) = s.get_text() {
+                        if let Ok(i) = text.parse::<u32>() {
+                            a.activate(&i.into());
+                        }
                     }
                 }
             });
