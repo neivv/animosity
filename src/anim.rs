@@ -506,8 +506,19 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
     let mut out = vec![0u8; size * 4];
     let mut pos = 0u32;
     for _y_tile in 0..(height / 4) {
-        for x_tile in 0..(width / 4) {
-            let alpha = read.read_u64::<LE>()?;
+        'single_block: for x_tile in 0..(width / 4) {
+            let (mut block, rest) = match read.len() {
+                x if x < 16 => return Err(format_err!("Reached end of input")),
+                _ => read.split_at(16),
+            };
+            read = rest;
+            let alpha = block.read_u64::<LE>()?;
+            if alpha & !0xff00 == 0 {
+                // Fully transparent block, rest can be skipped since `out` was zero-filled =)
+                // (Full transparency can be specified in several ways though, and this won't
+                // catch them all)
+                continue 'single_block;
+            }
             let a0_raw = (alpha & 0xff) as u8;
             let a1_raw = ((alpha >> 8) & 0xff) as u8;
             let a0 = a0_raw as f32;
@@ -515,65 +526,68 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
             let mut alpha = alpha >> 16;
             let alpha_table = if a0_raw > a1_raw {
                 [
-                    a0_raw,
-                    a1_raw,
-                    ((a0 * 6.0 + a1) / 7.0) as u8,
-                    ((a0 * 5.0 + a1 * 2.0) / 7.0) as u8,
-                    ((a0 * 4.0 + a1 * 3.0) / 7.0) as u8,
-                    ((a0 * 3.0 + a1 * 4.0) / 7.0) as u8,
-                    ((a0 * 2.0 + a1 * 5.0) / 7.0) as u8,
-                    ((a0 + a1 * 6.0) / 7.0) as u8,
+                    a0,
+                    a1,
+                    a0 * (6.0 / 7.0) + a1 / 7.0,
+                    a0 * (5.0 / 7.0) + a1 * (2.0 / 7.0),
+                    a0 * (4.0 / 7.0) + a1 * (3.0 / 7.0),
+                    a0 * (3.0 / 7.0) + a1 * (4.0 / 7.0),
+                    a0 * (2.0 / 7.0) + a1 * (5.0 / 7.0),
+                    a0 / 7.0 + a1 * (6.0 / 7.0),
                 ]
             } else {
                 [
-                    a0_raw,
-                    a1_raw,
-                    ((a0 * 4.0 + a1) / 5.0) as u8,
-                    ((a0 * 3.0 + a1 * 2.0) / 5.0) as u8,
-                    ((a0 * 2.0 + a1 * 3.0) / 5.0) as u8,
-                    ((a0 + a1 * 4.0) / 5.0) as u8,
-                    0,
-                    255,
+                    a0,
+                    a1,
+                    a0 * (4.0 / 5.0) + a1 / 5.0,
+                    a0 * (3.0 / 5.0) + a1 * (2.0 / 5.0),
+                    a0 * (2.0 / 5.0) + a1 * (3.0 / 5.0),
+                    a0 / 5.0 + a1 * (4.0 / 5.0),
+                    0.0,
+                    255.0,
                 ]
             };
-            let c0_raw = read.read_u16::<LE>()?;
-            let c1_raw = read.read_u16::<LE>()?;
-            let c0 = color16(c0_raw);
-            let c1 = color16(c1_raw);
-            let mut colors = read.read_u32::<LE>()?;
+            let c0_raw = block.read_u16::<LE>()?;
+            let c1_raw = block.read_u16::<LE>()?;
+            let c0 = color16_no_alpha(c0_raw);
+            let c1 = color16_no_alpha(c1_raw);
+            let mut colors = block.read_u32::<LE>()?;
             let (c2, c3) = (
                 (
-                    (c0.0 * 2.0 / 3.0 + c1.0 / 3.0),
-                    (c0.1 * 2.0 / 3.0 + c1.1 / 3.0),
-                    (c0.2 * 2.0 / 3.0 + c1.2 / 3.0),
+                    ((c0.0 * 2.0 + c1.0) / 3.0),
+                    ((c0.1 * 2.0 + c1.1) / 3.0),
+                    ((c0.2 * 2.0 + c1.2) / 3.0),
                 ),
                 (
-                    (c1.0 * 2.0 / 3.0 + c0.0 / 3.0),
-                    (c1.1 * 2.0 / 3.0 + c0.1 / 3.0),
-                    (c1.2 * 2.0 / 3.0 + c0.2 / 3.0),
+                    ((c1.0 * 2.0 + c0.0) / 3.0),
+                    ((c1.1 * 2.0 + c0.1) / 3.0),
+                    ((c1.2 * 2.0 + c0.2) / 3.0),
                 ),
             );
-            let table = [rgba(c0) & 0xffffff, rgba(c1) & 0xffffff, rgb(c2), rgb(c3)];
+            let table = [c0, c1, c2, c3];
             let mut pos = pos;
             for _y in 0..4 {
+                // Skipping overflow checks
+                let pixel_pos = pos.wrapping_add((x_tile as u32).wrapping_mul(4)) as usize;
+                let byte_pos = pixel_pos.wrapping_mul(4);
+                let line = &mut out[byte_pos..byte_pos + 16];
+
                 for x in 0..4 {
-                    let alpha_mul = alpha_table[(alpha & 7) as usize] as f32 / 255.0;
+                    let alpha_mul = alpha_table[(alpha & 7) as usize];
                     let color = table[(colors & 3) as usize];
-                    let color =
-                        (((color & 0xff) as f32 * alpha_mul) as u32) |
-                        (((((color >> 8) & 0xff) as f32 * alpha_mul) as u32) << 8) |
-                        (((((color >> 16) & 0xff) as f32 * alpha_mul) as u32) << 16) |
-                        ((alpha_table[(alpha & 7) as usize] as u32) << 24);
+                    line[x * 4 + 0] = (color.0 * alpha_mul) as u8;
+                    line[x * 4 + 1] = (color.1 * alpha_mul) as u8;
+                    line[x * 4 + 2] = (color.2 * alpha_mul) as u8;
+                    line[x * 4 + 3] = alpha_table[(alpha & 7) as usize] as u8;
                     colors = colors >> 2;
                     alpha = alpha >> 3;
-                    let pixel_pos = (pos + x_tile as u32 * 4 + x) as usize;
-                    (&mut out[(pixel_pos * 4)..]).write_u32::<LE>(color)?;
                 }
-                pos += width;
+                pos = pos.wrapping_add(width);
             }
         }
-        pos += width as u32 * 4;
+        pos = pos.wrapping_add((width as u32).wrapping_mul(4));
     }
+    let time = start.elapsed();
     Ok(out)
 }
 
@@ -584,32 +598,37 @@ fn decode_dxt1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
     let mut pos = 0u32;
     for _y_tile in 0..(height / 4) {
         for x_tile in 0..(width / 4) {
-            let c0_raw = read.read_u16::<LE>()?;
-            let c1_raw = read.read_u16::<LE>()?;
+            let (mut block, rest) = match read.len() {
+                x if x < 8 => return Err(format_err!("Reached end of input")),
+                _ => read.split_at(8),
+            };
+            read = rest;
+            let c0_raw = block.read_u16::<LE>()?;
+            let c1_raw = block.read_u16::<LE>()?;
             let c0 = color16(c0_raw);
             let c1 = color16(c1_raw);
-            let mut colors = read.read_u32::<LE>()?;
+            let mut colors = block.read_u32::<LE>()?;
             let (c2, c3) = match c0_raw > c1_raw {
                 true => (
                     (
-                        (c0.0 * 2.0 / 3.0 + c1.0 / 3.0),
-                        (c0.1 * 2.0 / 3.0 + c1.1 / 3.0),
-                        (c0.2 * 2.0 / 3.0 + c1.2 / 3.0),
-                        (1.0),
+                        (c0.0 * 2.0 + c1.0) / 3.0,
+                        (c0.1 * 2.0 + c1.1) / 3.0,
+                        (c0.2 * 2.0 + c1.2) / 3.0,
+                        1.0,
                     ),
                     (
-                        (c1.0 * 2.0 / 3.0 + c0.0 / 3.0),
-                        (c1.1 * 2.0 / 3.0 + c0.1 / 3.0),
-                        (c1.2 * 2.0 / 3.0 + c0.2 / 3.0),
-                        (1.0),
+                        (c1.0 * 2.0 + c0.0) / 3.0,
+                        (c1.1 * 2.0 + c0.1) / 3.0,
+                        (c1.2 * 2.0 + c0.2) / 3.0,
+                        1.0,
                     ),
                 ),
                 false => (
                     (
-                        (c0.0 / 2.0 + c1.0 / 2.0),
-                        (c0.1 / 2.0 + c1.1 / 2.0),
-                        (c0.2 / 2.0 + c1.2 / 2.0),
-                        (1.0),
+                        (c0.0 + c1.0) / 2.0,
+                        (c0.1 + c1.1) / 2.0,
+                        (c0.2 + c1.2) / 2.0,
+                        1.0,
                     ),
                     (0.0, 0.0, 0.0, 0.0),
                 ),
@@ -617,18 +636,29 @@ fn decode_dxt1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
             let table = [rgba(c0), rgba(c1), rgba(c2), rgba(c3)];
             let mut pos = pos;
             for _y in 0..4 {
-                for x in 0..4 {
+                let pixel_pos = pos.wrapping_add((x_tile as u32).wrapping_mul(4)) as usize;
+                let byte_pos = pixel_pos.wrapping_mul(4);
+                let mut line = &mut out[byte_pos..byte_pos + 16];
+
+                for _x in 0..4 {
                     let color = table[(colors & 3) as usize];
                     colors = colors >> 2;
-                    let pixel_pos = (pos + x_tile as u32 * 4 + x) as usize;
-                    (&mut out[(pixel_pos * 4)..]).write_u32::<LE>(color)?;
+                    line.write_u32::<LE>(color)?;
                 }
-                pos += width;
+                pos = pos.wrapping_add(width);
             }
         }
-        pos += width as u32 * 4;
+        pos = pos.wrapping_add((width as u32).wrapping_mul(4));
     }
     Ok(out)
+}
+
+fn color16_no_alpha(input: u16) -> (f32, f32, f32) {
+    (
+        ((input & 0xf800) >> 11) as f32 / (0x1f as f32),
+        ((input & 0x7e0) >> 5) as f32 / (0x3f as f32),
+        (input & 0x1f) as f32 / (0x1f as f32),
+    )
 }
 
 fn color16(input: u16) -> (f32, f32, f32, f32) {
@@ -645,12 +675,6 @@ fn rgba(input: (f32, f32, f32, f32)) -> u32 {
         (((input.1 * 255.0) as u8 as u32) << 8) |
         (((input.2 * 255.0) as u8 as u32) << 16) |
         (((input.3 * 255.0) as u8 as u32) << 24)
-}
-
-fn rgb(input: (f32, f32, f32)) -> u32 {
-    (input.0 * 255.0) as u8 as u32 |
-        (((input.1 * 255.0) as u8 as u32) << 8) |
-        (((input.2 * 255.0) as u8 as u32) << 16)
 }
 
 pub struct RgbaTexture {
