@@ -43,8 +43,8 @@ pub struct SpriteData {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct SpriteValues {
     pub unk2: u16,
-    pub unk3a: u16,
-    pub unk3b: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -58,8 +58,8 @@ pub struct TexChanges {
 pub struct Frame {
     pub tex_x: u16,
     pub tex_y: u16,
-    pub x_off: u16,
-    pub y_off: u16,
+    pub x_off: i16,
+    pub y_off: i16,
     pub width: u16,
     pub height: u16,
     pub unknown: u32,
@@ -108,8 +108,8 @@ impl Anim {
             return Err(format_err!("No frames for a single-entry file"));
         }
         let unk2 = r.read_u16::<LE>()?;
-        let unk3a = r.read_u16::<LE>()?;
-        let unk3b = r.read_u16::<LE>()?;
+        let width = r.read_u16::<LE>()?;
+        let height = r.read_u16::<LE>()?;
         let frame_arr_offset = r.read_u32::<LE>()?;
         let textures = read_textures(&mut r, layers as u32)?;
         r.seek(SeekFrom::Start(frame_arr_offset as u64))?;
@@ -119,8 +119,8 @@ impl Anim {
             textures,
             values: SpriteValues {
                 unk2,
-                unk3a,
-                unk3b,
+                width,
+                height,
             },
         };
 
@@ -169,8 +169,8 @@ impl Anim {
         }
         out.write_u16::<LE>(frames.len() as u16)?;
         out.write_u16::<LE>(data_changes.unk2)?;
-        out.write_u16::<LE>(data_changes.unk3a)?;
-        out.write_u16::<LE>(data_changes.unk3b)?;
+        out.write_u16::<LE>(data_changes.width)?;
+        out.write_u16::<LE>(data_changes.height)?;
         let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
         out.write_u32::<LE>(!0)?;
         if let Some(changes) = textures {
@@ -257,8 +257,8 @@ impl MainSd {
                 sprites.push(SpriteType::Ref(ref_id));
             } else {
                 let unk2 = r.read_u16::<LE>()?;
-                let unk3a = r.read_u16::<LE>()?;
-                let unk3b = r.read_u16::<LE>()?;
+                let width = r.read_u16::<LE>()?;
+                let height = r.read_u16::<LE>()?;
                 let frame_arr_offset = r.read_u32::<LE>()?;
                 let textures = read_textures(&mut r, layers as u32)
                     .with_context(|_| format!("Invalid image {:x}", i))?;
@@ -269,8 +269,8 @@ impl MainSd {
                     textures,
                     values: SpriteValues {
                         unk2,
-                        unk3a,
-                        unk3b,
+                        width,
+                        height,
                     },
                 }));
             }
@@ -353,8 +353,8 @@ impl MainSd {
                     }
                     out.write_u16::<LE>(frames.len() as u16)?;
                     out.write_u16::<LE>(values.unk2)?;
-                    out.write_u16::<LE>(values.unk3a)?;
-                    out.write_u16::<LE>(values.unk3b)?;
+                    out.write_u16::<LE>(values.width)?;
+                    out.write_u16::<LE>(values.height)?;
                     let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
                     out.write_u32::<LE>(!0)?;
                     if let Some(changes) = texture_changes {
@@ -755,8 +755,8 @@ fn read_frames<R: Read>(mut r: R, count: u16) -> Result<Vec<Frame>, Error> {
         Ok(Frame {
             tex_x: r.read_u16::<LE>()?,
             tex_y: r.read_u16::<LE>()?,
-            x_off: r.read_u16::<LE>()?,
-            y_off: r.read_u16::<LE>()?,
+            x_off: r.read_i16::<LE>()?,
+            y_off: r.read_i16::<LE>()?,
             width: r.read_u16::<LE>()?,
             height: r.read_u16::<LE>()?,
             unknown: r.read_u32::<LE>()?,
@@ -771,8 +771,8 @@ fn write_frames<W: Write>(
     for f in frames {
         out.write_u16::<LE>(f.tex_x)?;
         out.write_u16::<LE>(f.tex_y)?;
-        out.write_u16::<LE>(f.x_off)?;
-        out.write_u16::<LE>(f.y_off)?;
+        out.write_i16::<LE>(f.x_off)?;
+        out.write_i16::<LE>(f.y_off)?;
         out.write_u16::<LE>(f.width)?;
         out.write_u16::<LE>(f.height)?;
         out.write_u32::<LE>(f.unknown)?;

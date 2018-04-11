@@ -221,8 +221,8 @@ struct SpriteValues {
     ref_enable: gtk::CheckButton,
     ref_index: Arc<IntEntry>,
     unk2: Arc<IntEntry>,
-    unk3a: Arc<IntEntry>,
-    unk3b: Arc<IntEntry>,
+    width: Arc<IntEntry>,
+    height: Arc<IntEntry>,
     texture_dimensions: gtk::Label,
     frame_count_label: gtk::Label,
 }
@@ -230,7 +230,7 @@ struct SpriteValues {
 impl SpriteValues {
     fn new() -> SpriteValues {
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let ref_enable = gtk::CheckButton::new_with_label("Refers image");
+        let ref_enable = gtk::CheckButton::new_with_label("References image");
         ref_enable.set_sensitive(false);
         let ref_index = IntEntry::new(IntSize::Int16);
         ref_index.frame.set_sensitive(false);
@@ -239,10 +239,10 @@ impl SpriteValues {
         let frame_count_label = gtk::Label::new(Some("0 frames"));
         let unk2_label = gtk::Label::new(Some("Unknown2"));
         let unk2 = IntEntry::new(IntSize::Int16);
-        let unk3_label = gtk::Label::new(Some("Unknown3"));
+        let unk3_label = gtk::Label::new(Some("Dimensions"));
         let unk3_bx = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let unk3a = IntEntry::new(IntSize::Int16);
-        let unk3b = IntEntry::new(IntSize::Int16);
+        let width = IntEntry::new(IntSize::Int16);
+        let height = IntEntry::new(IntSize::Int16);
         bx.set_sensitive(false);
         bx.pack_start(&ref_enable, false, false, 0);
         bx.pack_start(&ref_index.widget(), false, false, 0);
@@ -251,16 +251,16 @@ impl SpriteValues {
         bx.pack_start(&unk2_label, false, false, 0);
         bx.pack_start(&unk2.widget(), false, false, 0);
         bx.pack_start(&unk3_label, false, false, 0);
-        unk3_bx.pack_start(&unk3a.widget(), true, true, 0);
-        unk3_bx.pack_start(&unk3b.widget(), true, true, 0);
+        unk3_bx.pack_start(&width.widget(), true, true, 0);
+        unk3_bx.pack_start(&height.widget(), true, true, 0);
         bx.pack_start(&unk3_bx, false, false, 0);
         SpriteValues {
             bx,
             ref_index,
             ref_enable,
             unk2,
-            unk3a,
-            unk3b,
+            width,
+            height,
             texture_dimensions,
             frame_count_label,
         }
@@ -283,8 +283,8 @@ impl SpriteValues {
             let i = self.ref_index.clone();
             let check = self.ref_enable.clone();
             let u2 = self.unk2.clone();
-            let u3a = self.unk3a.clone();
-            let u3b = self.unk3b.clone();
+            let u3a = self.width.clone();
+            let u3b = self.height.clone();
             let disable_check = disable_check.clone();
             a.connect_activate(move |_, param| {
                 if let Some(enabled) = param.as_ref().and_then(|x| x.get::<bool>()) {
@@ -319,12 +319,12 @@ impl SpriteValues {
             "edit_ref_img",
         );
         IntEntry::connect_actions(&self.unk2, sprite_actions, "init_unk2", "edit_unk2");
-        IntEntry::connect_actions(&self.unk3a, sprite_actions, "init_unk3a", "edit_unk3a");
-        IntEntry::connect_actions(&self.unk3b, sprite_actions, "init_unk3b", "edit_unk3b");
+        IntEntry::connect_actions(&self.width, sprite_actions, "init_unk3a", "edit_unk3a");
+        IntEntry::connect_actions(&self.height, sprite_actions, "init_unk3b", "edit_unk3b");
         let i = self.ref_index.clone();
         let u2 = self.unk2.clone();
-        let u3a = self.unk3a.clone();
-        let u3b = self.unk3b.clone();
+        let u3a = self.width.clone();
+        let u3b = self.height.clone();
         let bx = self.bx.clone();
         if let Some(a) = lookup_action(sprite_actions, "sprite_exists") {
             a.connect_activate(move |_, param| {
@@ -921,7 +921,7 @@ impl SpriteInfo {
         action(group, "edit_unk3a", true, Some("u"), move |_, param| {
             if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
                 s.update_active_file(|x, _| {
-                    x.unk3a = value as u16;
+                    x.width = value as u16;
                 });
             }
         });
@@ -929,7 +929,7 @@ impl SpriteInfo {
         action(group, "edit_unk3b", true, Some("u"), move |_, param| {
             if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
                 s.update_active_file(|x, _| {
-                    x.unk3b = value as u16;
+                    x.height = value as u16;
                 });
             }
         });
@@ -1063,9 +1063,9 @@ impl SpriteInfo {
             if let Some(data) = sprite_data {
                 let variant = (data.unk2 as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk2", Some(&variant));
-                let variant = (data.unk3a as u32).to_variant();
+                let variant = (data.width as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk3a", Some(&variant));
-                let variant = (data.unk3b as u32).to_variant();
+                let variant = (data.height as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk3b", Some(&variant));
             }
             let frame_count = file.frames().map(|x| x.len() as u32).unwrap_or(0);

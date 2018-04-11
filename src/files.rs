@@ -479,8 +479,8 @@ impl Files {
                 false => {
                     let values = SpriteValues {
                         unk2: !0,
-                        unk3a: 0,
-                        unk3b: 0,
+                        width: 0,
+                        height: 0,
                     };
                     Edit::Values(EditValues {
                         values,
