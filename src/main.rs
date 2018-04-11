@@ -1306,16 +1306,25 @@ fn open(filename: &Path) {
 }
 
 fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
-    let dialog =
-        gtk::FileChooserDialog::new(Some("Open..."), Some(parent), gtk::FileChooserAction::Open);
+    let dialog = gtk::FileChooserNative::new(
+        Some("Open..."),
+        Some(parent),
+        gtk::FileChooserAction::Open,
+        Some("Open"),
+        Some("Cancel")
+    );
     dialog.set_select_multiple(false);
     let filter = gtk::FileFilter::new();
     filter.add_pattern("*.anim");
     filter.add_pattern("*.dds.grp");
     gtk::FileFilterExt::set_name(&filter, "Valid files");
     dialog.add_filter(&filter);
-    dialog.add_button("Open", gtk::ResponseType::Accept.into());
-    dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
+    let filter = gtk::FileFilter::new();
+    filter.add_pattern("*.*");
+    gtk::FileFilterExt::set_name(&filter, "All files");
+    dialog.add_filter(&filter);
+    //dialog.add_button("Open", gtk::ResponseType::Accept.into());
+    //dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
     let result = dialog.run();
     let result = if result == gtk::ResponseType::Accept.into() {
         dialog.get_filename()
