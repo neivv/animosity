@@ -31,26 +31,31 @@ fn fix_text(text: &str) -> Option<String> {
     None
 }
 
+pub fn entry() -> (gtk::Entry, gtk::Frame) {
+    let entry = gtk::Entry::new();
+    entry.set_has_frame(false);
+    let mut hints = entry.get_input_hints();
+    hints.remove(gtk::InputHints::EMOJI);
+    hints.insert(gtk::InputHints::NO_EMOJI);
+    entry.set_input_hints(hints);
+    let frame = gtk::Frame::new(None);
+    <_ as gtk::WidgetExt>::set_name(&frame, "entry_frame");
+    frame.add(&entry);
+    if let Some(style_ctx) = frame.get_style_context() {
+        let css = ::get_css_provider();
+        style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
+    }
+    (entry, frame)
+}
+
 impl IntEntry {
     pub fn new(size: IntSize) -> Arc<IntEntry> {
         let max_len = match size {
             IntSize::Int16 => 5,
         };
-        let entry = gtk::Entry::new();
-        entry.set_has_frame(false);
+        let (entry, frame) = entry();
         entry.set_max_length(max_len);
         entry.set_width_chars(max_len);
-        let mut hints = entry.get_input_hints();
-        hints.remove(gtk::InputHints::EMOJI);
-        hints.insert(gtk::InputHints::NO_EMOJI);
-        entry.set_input_hints(hints);
-        let frame = gtk::Frame::new(None);
-        <_ as gtk::WidgetExt>::set_name(&frame, "entry_frame");
-        frame.add(&entry);
-        if let Some(style_ctx) = frame.get_style_context() {
-            let css = ::get_css_provider();
-            style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
-        }
         Arc::new(IntEntry {
             entry,
             frame,

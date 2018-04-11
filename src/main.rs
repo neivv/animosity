@@ -10,6 +10,7 @@ extern crate glib;
 #[macro_use] extern crate glium;
 extern crate gtk;
 #[macro_use] extern crate log;
+extern crate png;
 
 mod anim;
 mod gl;
@@ -19,6 +20,8 @@ mod shaders;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
+use std::convert::TryFrom;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -29,7 +32,7 @@ use gtk::prelude::*;
 
 use cgmath::conv::array4x4;
 use cgmath::{Matrix4, vec4};
-use failure::Error;
+use failure::{Error, ResultExt};
 use glium::backend::glutin::headless::Headless;
 use glium::framebuffer::SimpleFrameBuffer;
 use glium::index::{IndexBuffer, PrimitiveType};
@@ -82,6 +85,7 @@ struct State {
 }
 
 struct Ui {
+    app: gtk::Application,
     main_window: gtk::ApplicationWindow,
     list: SpriteList,
     info: Arc<SpriteInfo>,
@@ -686,6 +690,189 @@ impl SpriteInfo {
         result
     }
 
+    fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
+        let tex_id = this.tex_id();
+        let mut files = match this.files.try_borrow_mut() {
+            Ok(o) => o,
+            _ => return,
+        };
+        let file = match files.file(tex_id.0, tex_id.1) {
+            Ok(Some(o)) => o,
+            _ => return,
+        };
+        let layer_names = file.layer_names();
+
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        let bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
+
+        fn label_section<O: IsA<gtk::Widget>>(name: &str, obj: &O) -> gtk::Box {
+            let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let label = gtk::Label::new(Some(name));
+            label.set_halign(gtk::Align::Start);
+            bx.pack_start(&label, false, false, 0);
+            bx.pack_start(obj, false, false, 0);
+            bx
+        }
+
+        let filename_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
+        let browse_button = gtk::Button::new_with_label("Select...");
+        let (path_entry, path_frame) = int_entry::entry();
+        path_entry.set_sensitive(false);
+        path_frame.set_vexpand(false);
+        path_frame.set_valign(gtk::Align::End);
+        filename_bx.pack_start(&path_frame, true, true, 0);
+        filename_bx.pack_start(&browse_button, false, false, 0);
+        let e = path_entry.clone();
+        let w = window.clone();
+        browse_button.connect_clicked(move |_| {
+            if let Some(path) = choose_dir_dialog(&w) {
+                e.set_text(&path.to_string_lossy());
+            }
+        });
+        let filename_bx = label_section("Output directory", &filename_bx);
+
+        let type_lowercase = match tex_id.1 {
+            SpriteType::Sd => "sd",
+            SpriteType::Hd => "hd",
+            SpriteType::Hd2 => "hd2",
+        };
+
+        let framedef_bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let framedef_label = gtk::Label::new(Some("Write miscellaneous frame info to.."));
+        let (framedef_entry, framedef_frame) = int_entry::entry();
+        let framedef_name = format!("frames_{:03}_{}.txt", tex_id.0, type_lowercase);
+        framedef_entry.set_text(&framedef_name);
+        framedef_label.set_halign(gtk::Align::Start);
+        framedef_bx.pack_start(&framedef_label, false, false, 0);
+        framedef_bx.pack_start(&framedef_frame, true, true, 0);
+
+        let grid = gtk::Grid::new();
+        grid.set_column_spacing(5);
+        grid.set_row_spacing(5);
+        let mut checkboxes = Vec::with_capacity(layer_names.len());
+        let prefix_label = gtk::Label::new(Some("Filename prefix"));
+        let prefix_prefix = format!("{:03}_{}", tex_id.0, type_lowercase);
+        prefix_label.set_halign(gtk::Align::Start);
+        grid.attach(&prefix_label, 2, 0, 1, 1);
+        for (i, name) in layer_names.iter().enumerate() {
+            let row = i as i32 + 1;
+            let tex_size = file.texture_size(i);
+
+            let checkbox = gtk::CheckButton::new();
+            grid.attach(&checkbox, 0, row, 1, 1);
+            let label = gtk::Label::new(Some(&**name));
+            grid.attach(&label, 1, row, 1, 1);
+            label.set_halign(gtk::Align::Start);
+
+            let (entry, frame) = int_entry::entry();
+            frame.set_hexpand(true);
+
+            if tex_size.is_none() {
+                checkbox.set_sensitive(false);
+                label.set_sensitive(false);
+                entry.set_sensitive(false);
+                checkbox.set_active(false);
+            } else {
+                checkbox.set_active(true);
+                entry.set_text(&format!("{}_{}", prefix_prefix, name));
+            }
+            let e = entry.clone();
+            checkbox.connect_toggled(move |s| {
+                e.set_sensitive(s.get_active());
+            });
+
+            grid.attach(&frame, 2, row, 1, 1);
+            checkboxes.push((checkbox, entry));
+        }
+        let layers_bx = label_section("Layers to export", &grid);
+
+        let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
+        let ok_button = gtk::Button::new_with_label("Export");
+        let cancel_button = gtk::Button::new_with_label("Cancel");
+        let w = window.clone();
+        cancel_button.connect_clicked(move |_| {
+            w.destroy();
+        });
+        let s = this.clone();
+        let w = window.clone();
+        ok_button.connect_clicked(move |_| {
+            let path: PathBuf = match path_entry.get_text() {
+                Some(s) => s.into(),
+                None => return,
+            };
+            let framedef: PathBuf = match framedef_entry.get_text() {
+                Some(s) => s.into(),
+                None => return,
+            };
+            let layers_to_export = checkboxes.iter().map(|(check, entry)| {
+                if check.get_active() {
+                    Some(entry.get_text().unwrap_or_else(|| String::new()))
+                } else {
+                    None
+                }
+            }).collect::<Vec<_>>();
+
+            let tex_id = s.tex_id();
+            let mut files = match s.files.try_borrow_mut() {
+                Ok(o) => o,
+                _ => return,
+            };
+            let file = match files.file(tex_id.0, tex_id.1) {
+                Ok(Some(o)) => o,
+                _ => return,
+            };
+
+            match export_frames(&file, tex_id.1, &path, &framedef, &layers_to_export) {
+                Ok(()) => {
+                    let frame_count =
+                        layers_to_export.iter().filter(|x| x.is_some()).count() *
+                        file.frames().map(|x| x.len()).unwrap_or(0);
+                    let msg =
+                        format!("Wrote {} frames to {}", frame_count, path.to_string_lossy());
+                    let dialog = gtk::MessageDialog::new(
+                        Some(&w),
+                        gtk::DialogFlags::MODAL,
+                        gtk::MessageType::Info,
+                        gtk::ButtonsType::Ok,
+                        &msg
+                    );
+                    dialog.run();
+                    dialog.destroy();
+                    w.destroy();
+                }
+                Err(e) => {
+                    use std::fmt::Write;
+                    let mut msg = format!("Unable to export frames:\n");
+                    for c in e.causes() {
+                        writeln!(msg, "{}", c).unwrap();
+                    }
+                    let dialog = gtk::MessageDialog::new(
+                        Some(&w),
+                        gtk::DialogFlags::MODAL,
+                        gtk::MessageType::Error,
+                        gtk::ButtonsType::Ok,
+                        &msg
+                    );
+                    dialog.run();
+                    dialog.destroy();
+                }
+            };
+        });
+        button_bx.pack_end(&cancel_button, false, false, 0);
+        button_bx.pack_end(&ok_button, false, false, 0);
+        bx.pack_start(&filename_bx, false, false, 0);
+        bx.pack_start(&framedef_bx, false, false, 0);
+        bx.pack_start(&layers_bx, false, false, 0);
+        bx.pack_start(&button_bx, false, false, 0);
+        window.add(&bx);
+        window.set_border_width(10);
+        window.set_property_default_width(350);
+        window.set_title(&format!("Export frames of {:?} image {}", tex_id.1, tex_id.0));
+        window.set_modal(true);
+        window.set_transient_for(Some(parent));
+        window.show_all();
+    }
+
     fn on_dirty_update<F: Fn(bool) + 'static>(&self, fun: F) {
         if let Some(a) = lookup_action(&self.sprite_actions, "is_dirty") {
             a.connect_activate(move |_, param| {
@@ -1183,6 +1370,25 @@ impl SpriteInfo {
     }
 }
 
+fn choose_dir_dialog(parent: &gtk::Window) -> Option<PathBuf> {
+    let dialog = gtk::FileChooserNative::new(
+        Some("Select folder..."),
+        Some(parent),
+        gtk::FileChooserAction::SelectFolder,
+        Some("Select"),
+        Some("Cancel")
+    );
+    dialog.set_select_multiple(false);
+    let result = dialog.run();
+    let result = if result == gtk::ResponseType::Accept.into() {
+        dialog.get_filename()
+    } else {
+        None
+    };
+    dialog.destroy();
+    result
+}
+
 fn create_menu() -> gio::Menu {
     use gio::MenuExt;
     use gio::MenuItemExt;
@@ -1213,17 +1419,18 @@ fn create_menu() -> gio::Menu {
         menu.append_section(None, &exit);
         menu
     };
+    // Gtk is dumb and doesn't like underscores w/ accel actions
     let sprite_menu = {
         let menu = gio::Menu::new();
         let export_actions = {
             let menu = gio::Menu::new();
-            menu.append_item(&with_accel("_Export frames...", "app.export_frames", "<Ctrl>E"));
+            menu.append_item(&with_accel("_Export frames...", "app.exportFrames", "<Ctrl>E"));
             menu
         };
         menu.append_section(None, &export_actions);
         let import_actions = {
             let menu = gio::Menu::new();
-            menu.append_item(&with_accel("_Import frames...", "app.import_frames", "<Ctrl>I"));
+            menu.append_item(&with_accel("_Import frames...", "app.importFrames", "<Ctrl>I"));
             menu
         };
         menu.append_section(None, &import_actions);
@@ -1235,6 +1442,7 @@ fn create_menu() -> gio::Menu {
         let debug_menu = {
             let menu = gio::Menu::new();
             menu.append_item(&with_accel("Write test", "app.debug_write", ""));
+            menu.append_item(&with_accel("Dump frame info", "app.debug_dump_frames", ""));
             menu
         };
         menu.append_submenu(Some("_Debug"), &debug_menu);
@@ -1263,6 +1471,14 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
             open(&filename);
         }
     });
+    action(app, "save", false, move |_, _| {
+    });
+    action(app, "exportFrames", false, move |_, _| {
+        let ui = ui();
+        SpriteInfo::frame_export_dialog(&ui.info, &ui.main_window);
+    });
+    action(app, "importFrames", false, move |_, _| {
+    });
     if cfg!(debug_assertions) {
         action(app, "debug_write", true, move |_, _| {
             let files = STATE.with(|x| {
@@ -1276,6 +1492,62 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
             files.write_separate(out, 28, SpriteType::Hd).unwrap();
             println!("Write test finished");
         });
+        action(app, "debug_dump_frames", true, move |_, _| {
+            use std::io::Write;
+
+            fn write_frames<W: Write>(file: files::File, out: &mut W) -> Result<(), Error> {
+                if let Some(i) = file.sprite_values() {
+                    writeln!(
+                        out,
+                        "Unk2 {:x} Unk3 {}:{}",
+                        i.unk2, i.width, i.height,
+                    )?
+                }
+                if let Some(frames) = file.frames() {
+                    for (i, f) in frames.iter().enumerate() {
+                        writeln!(
+                            out,
+                            "Frame {} Tex {}:{} Sprite {}:{} Size {}:{} Unk {:x}",
+                            i, f.tex_x, f.tex_y, f.x_off, f.y_off, f.width, f.height, f.unknown,
+                        )?
+                    }
+                }
+                Ok(())
+            }
+            let files = STATE.with(|x| {
+                let state = x.borrow();
+                state.files.clone()
+            });
+            let mut files = files.borrow_mut();
+            let mut out = std::io::BufWriter::new(File::create("frames.txt").unwrap());
+            for i in 0..files.sprites().len() {
+                if let Some(file) = files.file(i, SpriteType::Sd).unwrap() {
+                    writeln!(out, "Sd image {}", i).unwrap();
+                    write_frames(file, &mut out).unwrap();
+                }
+                if let Some(file) = files.file(i, SpriteType::Hd).unwrap() {
+                    writeln!(out, "Hd image {}", i).unwrap();
+                    write_frames(file, &mut out).unwrap();
+                }
+                if let Some(file) = files.file(i, SpriteType::Hd2).unwrap() {
+                    writeln!(out, "Hd2 image {}", i).unwrap();
+                    write_frames(file, &mut out).unwrap();
+                }
+            }
+            println!("Frames dumped");
+        });
+    }
+}
+
+fn enable_file_actions(app: &gtk::Application) {
+    if let Some(a) = lookup_action(app, "save") {
+        a.set_enabled(true);
+    }
+    if let Some(a) = lookup_action(app, "importFrames") {
+        a.set_enabled(true);
+    }
+    if let Some(a) = lookup_action(app, "exportFrames") {
+        a.set_enabled(true);
     }
 }
 
@@ -1293,6 +1565,7 @@ fn open(filename: &Path) {
             }
             ui.info.sprite_actions.activate_action("select_sd", None);
             ui.info.select_sprite(0);
+            enable_file_actions(&ui.app);
         }
         Err(e) => {
             use std::fmt::Write;
@@ -1393,8 +1666,105 @@ fn create_ui(app: &gtk::Application) -> Ui {
         style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
     }
     Ui {
+        app: app.clone(),
         main_window: window,
         list,
         info,
     }
+}
+
+// Won't export layers with None prefix,
+// framedef_file is joined to path, as are the image names
+fn export_frames(
+    file: &files::File,
+    ty: SpriteType,
+    path: &Path,
+    framedef_file: &Path,
+    layer_prefixes: &[Option<String>],
+) -> Result<(), Error> {
+    use std::io::BufWriter;
+    use std::io::Write;
+
+    use png::HasParameters;
+
+    if !path.is_dir() {
+        return Err(format_err!("{} is not a directory", path.to_string_lossy()));
+    }
+    let frames = file.frames().ok_or_else(|| format_err!("Unable to get frames"))?;
+    let values = match file.sprite_values() {
+        Some(s) => s,
+        None => return Err(format_err!("Couldn't get sprite values")),
+    };
+    let enum_prefixes =
+        layer_prefixes.iter().enumerate().flat_map(|(i, x)| x.as_ref().map(|x| (i, x)));
+    let x_base = frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32);
+    let y_base = frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32);
+    let x_max = frames.iter().map(|x| x.x_off as i32 + x.width as i32).max().unwrap_or(1);
+    let y_max = frames.iter().map(|x| x.y_off as i32 + x.height as i32).max().unwrap_or(1);
+    let out_width = (x_max.max(values.width as i32) - x_base) as u32;
+    let out_height = (y_max.max(values.height as i32) - y_base) as u32;
+    for (i, prefix) in enum_prefixes {
+        let texture = file.texture(i)?;
+        for (n, frame) in frames.iter().enumerate() {
+            let path = path.join(format!("{}_{:03}.png", prefix, n));
+            let out = File::create(&path)
+                .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
+            let mut out = BufWriter::new(out);
+
+            let blank_left = u32::try_from(frame.x_off as i32 - x_base)?;
+            let blank_top = u32::try_from(frame.y_off as i32 - y_base)?;
+            let blank_right = out_width - (blank_left + frame.width as u32);
+            let blank_bottom = out_height - (blank_top + frame.height as u32);
+
+            let mut bytes = Vec::with_capacity((out_width * out_height * 4) as usize);
+            bytes.extend((0..blank_top * out_width).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
+            for row in 0..(out_height - blank_top - blank_bottom) {
+                let tex_start = (
+                    (frame.tex_y as u32 + row) * texture.width + frame.tex_x as u32
+                ) as usize * 4;
+                let image_row = texture.data.get(tex_start..tex_start + frame.width as usize * 4);
+                let image_row = match image_row {
+                    Some(s) => s,
+                    None => return Err(format_err!("Bad frame data for frame {}", n)),
+                };
+                bytes.extend((0..blank_left).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
+                bytes.extend_from_slice(image_row);
+                bytes.extend((0..blank_right).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
+            }
+            bytes.extend(
+                (0..blank_bottom * out_width).flat_map(|_| [0, 0, 0, 0].iter().cloned())
+            );
+
+            let mut encoder = png::Encoder::new(out, out_width, out_height);
+            encoder.set(png::ColorType::RGBA);
+            let mut encoder = encoder.write_header()?;
+            encoder.write_image_data(&bytes)?;
+        }
+    }
+
+    let mut frame_info = File::create(&path.join(framedef_file))
+        .context("Can't create the frame info file")?;
+    writeln!(frame_info, "# Frame info for an anim file\n")?;
+    writeln!(frame_info, "frame_count = {}", frames.len())?;
+    writeln!(frame_info, "offset_x = {}", x_base)?;
+    writeln!(frame_info, "offset_y = {}", y_base)?;
+    for (i, layer) in layer_prefixes.iter().enumerate() {
+        if let Some(ref prefix) = *layer {
+            writeln!(frame_info, "layer_{} = {}", i, prefix)?;
+        }
+    }
+    let mut start = 0;
+    let mut first_unk = frames.get(0).map(|x| x.unknown).unwrap_or(0);
+    for (i, f) in frames.iter().enumerate() {
+        if f.unknown != first_unk {
+            writeln!(frame_info, "frame_types_{}_{} = {}", start, i, first_unk)?;
+            start = i + 1;
+            first_unk = frames.get(start).map(|x| x.unknown).unwrap_or(0);
+        }
+    }
+    if start < frames.len() {
+        writeln!(frame_info, "frame_types_{}_{} = {}", start, frames.len() - 1, first_unk)?;
+    }
+
+    Ok(())
 }
