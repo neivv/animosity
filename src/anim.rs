@@ -95,7 +95,8 @@ impl Anim {
             if i < 10 {
                 let mut buf = [0u8; 0x20];
                 r.read_exact(&mut buf)?;
-                layer_names.push(String::from_utf8_lossy(&buf).into_owned());
+                let end = buf.iter().position(|x| *x == 0).unwrap_or(buf.len());
+                layer_names.push(String::from_utf8_lossy(&buf[..end]).into_owned());
             } else {
                 layer_names.push(format!("Layer {}", i));
             }
@@ -233,7 +234,8 @@ impl MainSd {
             if i < 10 {
                 let mut buf = [0u8; 0x20];
                 r.read_exact(&mut buf)?;
-                layer_names.push(String::from_utf8_lossy(&buf).into_owned());
+                let end = buf.iter().position(|x| *x == 0).unwrap_or(buf.len());
+                layer_names.push(String::from_utf8_lossy(&buf[..end]).into_owned());
             } else {
                 layer_names.push(format!("Layer {}", i));
             }
