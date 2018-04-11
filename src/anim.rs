@@ -587,7 +587,6 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
         }
         pos = pos.wrapping_add((width as u32).wrapping_mul(4));
     }
-    let time = start.elapsed();
     Ok(out)
 }
 
