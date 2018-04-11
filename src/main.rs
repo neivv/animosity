@@ -1,3 +1,4 @@
+extern crate app_dirs;
 extern crate byteorder;
 extern crate cairo;
 extern crate cgmath;
@@ -11,11 +12,13 @@ extern crate glib;
 extern crate gtk;
 #[macro_use] extern crate log;
 extern crate png;
+extern crate serde_json;
 
 mod anim;
 mod gl;
 mod int_entry;
 mod files;
+mod select_dir;
 mod shaders;
 
 use std::borrow::Cow;
@@ -714,22 +717,8 @@ impl SpriteInfo {
             bx
         }
 
-        let filename_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
-        let browse_button = gtk::Button::new_with_label("Select...");
-        let (path_entry, path_frame) = int_entry::entry();
-        path_entry.set_sensitive(false);
-        path_frame.set_vexpand(false);
-        path_frame.set_valign(gtk::Align::End);
-        filename_bx.pack_start(&path_frame, true, true, 0);
-        filename_bx.pack_start(&browse_button, false, false, 0);
-        let e = path_entry.clone();
-        let w = window.clone();
-        browse_button.connect_clicked(move |_| {
-            if let Some(path) = choose_dir_dialog(&w) {
-                e.set_text(&path.to_string_lossy());
-            }
-        });
-        let filename_bx = label_section("Output directory", &filename_bx);
+        let dir_select = select_dir::SelectDir::new(&window, "export_frames");
+        let filename_bx = label_section("Output directory", &dir_select.widget());
 
         let type_lowercase = match tex_id.1 {
             SpriteType::Sd => "sd",
@@ -796,7 +785,7 @@ impl SpriteInfo {
         let s = this.clone();
         let w = window.clone();
         ok_button.connect_clicked(move |_| {
-            let path: PathBuf = match path_entry.get_text() {
+            let path: PathBuf = match dir_select.text() {
                 Some(s) => s.into(),
                 None => return,
             };
@@ -1370,25 +1359,6 @@ impl SpriteInfo {
     }
 }
 
-fn choose_dir_dialog(parent: &gtk::Window) -> Option<PathBuf> {
-    let dialog = gtk::FileChooserNative::new(
-        Some("Select folder..."),
-        Some(parent),
-        gtk::FileChooserAction::SelectFolder,
-        Some("Select"),
-        Some("Cancel")
-    );
-    dialog.set_select_multiple(false);
-    let result = dialog.run();
-    let result = if result == gtk::ResponseType::Accept.into() {
-        dialog.get_filename()
-    } else {
-        None
-    };
-    dialog.destroy();
-    result
-}
-
 fn create_menu() -> gio::Menu {
     use gio::MenuExt;
     use gio::MenuItemExt;
@@ -1598,8 +1568,8 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     dialog.add_filter(&filter);
     //dialog.add_button("Open", gtk::ResponseType::Accept.into());
     //dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
-    let result = dialog.run();
-    let result = if result == gtk::ResponseType::Accept.into() {
+    let result: gtk::ResponseType = dialog.run().into();
+    let result = if result == gtk::ResponseType::Accept {
         dialog.get_filename()
     } else {
         None
