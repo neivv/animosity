@@ -73,6 +73,13 @@ pub struct Texture {
     pub height: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureFormat {
+    Dxt1,
+    Dxt5,
+    Monochrome,
+}
+
 const ANIM_MAGIC: u32 = 0x4d494e41;
 
 impl Anim {
@@ -137,7 +144,7 @@ impl Anim {
     /// Since the read object is kept open (and used) here, `out` cannot be the same file as
     /// what was used to read this anim.
     pub fn write_patched<W: Write + Seek>(
-        &mut self,
+        &self,
         mut out: W,
         scale: u8,
         layer_names: &[String],
@@ -203,10 +210,6 @@ impl Anim {
         self.sprite.values
     }
 
-    pub fn sprite_data(&self) -> &SpriteData {
-        &self.sprite
-    }
-
     pub fn texture(&self, layer: usize) -> Result<RgbaTexture, Error> {
         let texture = self.sprite.textures.get(layer).and_then(|x| x.as_ref())
             .ok_or_else(|| format_err!("No layer {:x}", layer))?
@@ -214,6 +217,20 @@ impl Anim {
         let mut read = self.read.lock().unwrap();
         read.seek(SeekFrom::Start(texture.offset as u64))?;
         read_texture(&mut *read, &texture)
+    }
+
+    pub fn texture_formats(&self) -> Vec<Result<Option<TextureFormat>, Error>> {
+        let mut read = self.read.lock().unwrap();
+        let mut read = &mut *read;
+        self.sprite.textures.iter().map(|x| {
+            match *x {
+                Some(ref texture) => {
+                    read.seek(SeekFrom::Start(texture.offset as u64))?;
+                    texture_format(&mut read).map(Some)
+                }
+                None => Ok(None),
+            }
+        }).collect()
     }
 }
 
@@ -288,7 +305,7 @@ impl MainSd {
     /// Since the read object is kept open (and used) here, `out` cannot be the same file as
     /// what was used to read this anim.
     pub fn write_patched<W: Write + Seek>(
-        &mut self,
+        &self,
         mut out: W,
         sprite_count: u16,
         layer_names: &[String],
@@ -424,6 +441,24 @@ impl MainSd {
         read.seek(SeekFrom::Start(texture.offset as u64))?;
         read_texture(&mut *read, &texture)
     }
+
+    pub fn texture_formats(&self, sprite: usize) -> Vec<Result<Option<TextureFormat>, Error>> {
+        let mut read = self.read.lock().unwrap();
+        let mut read = &mut *read;
+        let sprite = match sprite_data_sd(&self.sprites, sprite) {
+            Some(o) => o,
+            None => return Vec::new(),
+        };
+        sprite.textures.iter().map(|x| {
+            match *x {
+                Some(ref texture) => {
+                    read.seek(SeekFrom::Start(texture.offset as u64))?;
+                    texture_format(&mut read).map(Some)
+                }
+                None => Ok(None),
+            }
+        }).collect()
+    }
 }
 
 fn sprite_data_sd<'a>(sprites: &'a [SpriteType], sprite: usize) -> Option<&'a SpriteData> {
@@ -451,9 +486,33 @@ fn sprite_values_sd(sprites: &[SpriteType], index: usize) -> Option<SpriteValues
     Some(sprite.values.clone())
 }
 
-fn read_texture<R: ReadSeek>(mut read: R, texture: &Texture) -> Result<RgbaTexture, Error> {
-    const DDS_MAGIC: u32 = 0x20534444;
-    const BMP_MAGIC: u32 = 0x20504d42;
+const DDS_MAGIC: u32 = 0x20534444;
+const BMP_MAGIC: u32 = 0x20504d42;
+
+pub fn texture_format<R: Read + Seek>(mut read: R) -> Result<TextureFormat, Error> {
+    let magic = read.read_u32::<LE>()?;
+    if magic == DDS_MAGIC {
+        read.seek(SeekFrom::Current(-4))?;
+        let dds = Dds::read(&mut read)
+            .map_err(|e| format_err!("Unable to read DDS: {}", e))?;
+        let format = dds.get_d3d_format()
+            .ok_or_else(|| format_err!("Unsupported DDS format"))?;
+        match format {
+            D3DFormat::DXT1 => Ok(TextureFormat::Dxt1),
+            D3DFormat::DXT5 => Ok(TextureFormat::Dxt5),
+            x => Err(format_err!("Unsupported DDS format {:?}", x)),
+        }
+    } else if magic == BMP_MAGIC {
+        Ok(TextureFormat::Monochrome)
+    } else {
+        Err(format_err!("Unknown texture format {:08x}", magic))
+    }
+}
+
+pub fn read_texture<R: Read + Seek>(
+    mut read: R,
+    texture: &Texture,
+) -> Result<RgbaTexture, Error> {
     let magic = read.read_u32::<LE>()?;
     if magic == DDS_MAGIC {
         read.seek(SeekFrom::Current(-4))?;
@@ -483,11 +542,10 @@ fn read_texture<R: ReadSeek>(mut read: R, texture: &Texture) -> Result<RgbaTextu
         read.read_exact(&mut pixels[..])?;
         let mut data = Vec::with_capacity(pixels.len() * 4);
         for p in pixels {
-            if p == 0 {
-                data.write_u32::<LE>(0).unwrap();
-            } else {
-                data.write_u32::<LE>(!0).unwrap();
-            }
+            data.push(255);
+            data.push(255);
+            data.push(255);
+            data.push(p);
         }
         Ok(RgbaTexture {
             data,
@@ -499,7 +557,7 @@ fn read_texture<R: ReadSeek>(mut read: R, texture: &Texture) -> Result<RgbaTextu
     }
 }
 
-/// Returns the bytes with alpha multiplied
+/// Returns the bytes without alpha multiplied
 fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
     let mut read = data;
     let size = (width * height) as usize;
@@ -573,11 +631,10 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
                 let line = &mut out[byte_pos..byte_pos + 16];
 
                 for x in 0..4 {
-                    let alpha_mul = alpha_table[(alpha & 7) as usize];
                     let color = table[(colors & 3) as usize];
-                    line[x * 4 + 0] = (color.0 * alpha_mul) as u8;
-                    line[x * 4 + 1] = (color.1 * alpha_mul) as u8;
-                    line[x * 4 + 2] = (color.2 * alpha_mul) as u8;
+                    line[x * 4 + 0] = (color.0 * 255.0) as u8;
+                    line[x * 4 + 1] = (color.1 * 255.0) as u8;
+                    line[x * 4 + 2] = (color.2 * 255.0) as u8;
                     line[x * 4 + 3] = alpha_table[(alpha & 7) as usize] as u8;
                     colors = colors >> 2;
                     alpha = alpha >> 3;
