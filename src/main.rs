@@ -2072,7 +2072,13 @@ fn import_frames(
         f.width *= scale_mul;
         f.height *= scale_mul;
     }
-    println!("TODO SET FRAME UNKNOWNS");
+    for ty in &frame_info.frame_types {
+        for f in ty.first_frame..ty.last_frame + 1 {
+            if let Some(f) = changes.frames.get_mut(f as usize) {
+                f.unknown = ty.frame_type;
+            }
+        }
+    }
     files.set_tex_changes(sprite, ty, changes);
     Ok(())
 }
