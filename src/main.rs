@@ -807,7 +807,7 @@ impl SpriteInfo {
                 _ => return,
             };
 
-            match export_frames(&file, &path, &framedef, &layers_to_export) {
+            match export_frames(&file, tex_id.1, &path, &framedef, &layers_to_export) {
                 Ok(()) => {
                     let frame_count =
                         layers_to_export.iter().filter(|x| x.is_some()).count() *
@@ -1208,7 +1208,7 @@ impl SpriteInfo {
             )?;
             let lines = draw_params.lines.texture_lines.buffer_for_texture(facade, &tex_id, || {
                 let div = match tex_id.1 {
-                    // Hd2 has Hd coordinates?? Maybe unused by BW
+                    // Hd2 has Hd coordinates?? BW seems to divide them too
                     SpriteType::Hd2 => 2,
                     _ => 1,
                 };
@@ -1908,6 +1908,7 @@ fn create_ui(app: &gtk::Application) -> Ui {
 // framedef_file is joined to path, as are the image names
 fn export_frames(
     file: &files::File,
+    ty: SpriteType,
     path: &Path,
     framedef_file: &Path,
     layer_prefixes: &[Option<String>],
@@ -1919,6 +1920,12 @@ fn export_frames(
     if !path.is_dir() {
         return Err(format_err!("{} is not a directory", path.to_string_lossy()));
     }
+
+    let scale_div = match ty {
+        SpriteType::Hd2 => 2u32,
+        _ => 1u32,
+    };
+
     let frames = file.frames().ok_or_else(|| format_err!("Unable to get frames"))?;
     let values = match file.sprite_values() {
         Some(s) => s,
@@ -1926,12 +1933,16 @@ fn export_frames(
     };
     let enum_prefixes =
         layer_prefixes.iter().enumerate().flat_map(|(i, x)| x.as_ref().map(|x| (i, x)));
-    let x_base = frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32);
-    let y_base = frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32);
-    let x_max = frames.iter().map(|x| x.x_off as i32 + x.width as i32).max().unwrap_or(1);
-    let y_max = frames.iter().map(|x| x.y_off as i32 + x.height as i32).max().unwrap_or(1);
-    let out_width = (x_max.max(values.width as i32) - x_base) as u32;
-    let out_height = (y_max.max(values.height as i32) - y_base) as u32;
+    let x_base =
+        frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32) / scale_div as i32;
+    let y_base =
+        frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32) / scale_div as i32;
+    let x_max = frames.iter().map(|x| (x.x_off as i32 + x.width as i32) / scale_div as i32)
+        .max().unwrap_or(1);
+    let y_max = frames.iter().map(|x| (x.y_off as i32 + x.height as i32) / scale_div as i32)
+        .max().unwrap_or(1);
+    let out_width = (x_max.max(values.width as i32 / scale_div as i32) - x_base) as u32;
+    let out_height = (y_max.max(values.height as i32 / scale_div as i32) - y_base) as u32;
     for (i, prefix) in enum_prefixes {
         let texture = file.texture(i)?;
         for (n, frame) in frames.iter().enumerate() {
@@ -1940,18 +1951,23 @@ fn export_frames(
                 .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
             let mut out = BufWriter::new(out);
 
-            let blank_left = u32::try_from(frame.x_off as i32 - x_base)?;
-            let blank_top = u32::try_from(frame.y_off as i32 - y_base)?;
-            let blank_right = out_width - (blank_left + frame.width as u32);
-            let blank_bottom = out_height - (blank_top + frame.height as u32);
+            let tex_x = frame.tex_x / scale_div as u16;
+            let tex_y = frame.tex_y / scale_div as u16;
+            let frame_width = frame.width as u32 / scale_div;
+            let frame_height = frame.height as u32 / scale_div;
+
+            let blank_left = u32::try_from(frame.x_off as i32 / scale_div as i32 - x_base)?;
+            let blank_top = u32::try_from(frame.y_off as i32 / scale_div as i32 - y_base)?;
+            let blank_right = out_width - (blank_left + frame_width);
+            let blank_bottom = out_height - (blank_top + frame_height);
 
             let mut bytes = Vec::with_capacity((out_width * out_height * 4) as usize);
             bytes.extend((0..blank_top * out_width).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
             for row in 0..(out_height - blank_top - blank_bottom) {
                 let tex_start = (
-                    (frame.tex_y as u32 + row) * texture.width + frame.tex_x as u32
+                    (tex_y as u32 + row) * texture.width + tex_x as u32
                 ) as usize * 4;
-                let image_row = texture.data.get(tex_start..tex_start + frame.width as usize * 4);
+                let image_row = texture.data.get(tex_start..tex_start + frame_width as usize * 4);
                 let image_row = match image_row {
                     Some(s) => s,
                     None => return Err(format_err!("Bad frame data for frame {}", n)),
@@ -2042,7 +2058,20 @@ fn import_frames(
             encoder.add_frame(layer, f as usize, bounded.data, bounded.coords);
         }
     }
-    let changes = encoder.finish();
+    let mut changes = encoder.finish();
+
+    let scale_mul = match ty {
+        SpriteType::Hd2 => 2u16,
+        _ => 1,
+    };
+    for f in &mut changes.frames {
+        f.tex_x *= scale_mul;
+        f.tex_y *= scale_mul;
+        f.x_off *= scale_mul as i16;
+        f.y_off *= scale_mul as i16;
+        f.width *= scale_mul;
+        f.height *= scale_mul;
+    }
     println!("TODO SET FRAME UNKNOWNS");
     files.set_tex_changes(sprite, ty, changes);
     Ok(())
