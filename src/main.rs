@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 extern crate app_dirs;
 extern crate byteorder;
 extern crate cairo;
@@ -17,6 +19,7 @@ extern crate serde_json;
 
 mod anim;
 mod anim_encoder;
+mod ddsgrp;
 mod gl;
 mod int_entry;
 mod files;
@@ -128,7 +131,7 @@ impl Ui {
         for sprite in files.sprites() {
             let name: Cow<str> = match *sprite {
                 SpriteFiles::AnimSet(ref s) => (&*s.name).into(),
-                SpriteFiles::SingleFile(ref p) => p.to_string_lossy(),
+                SpriteFiles::SingleFile(_) => "(File)".into(),
                 SpriteFiles::MainSdOnly { ref name, .. } => (&**name).into(),
             };
             self.list.list.push(&name);
@@ -652,8 +655,14 @@ impl SpriteInfo {
             {
                 let mut clear_reqs = this.draw_clear_requests.borrow_mut();
                 for tex_id in clear_reqs.drain(..) {
-                    draw_params.cached_textures.retain(|x| x.1 != tex_id);
-                    draw_params.lines.texture_lines.0.retain(|x| x.0 != tex_id);
+                    if tex_id.0 == !0 {
+                        // Hack for clear all
+                        draw_params.cached_textures.clear();
+                        draw_params.lines.texture_lines.0.clear();
+                    } else {
+                        draw_params.cached_textures.retain(|x| x.1 != tex_id);
+                        draw_params.lines.texture_lines.0.retain(|x| x.0 != tex_id);
+                    }
                 }
             }
             gl.resize_buf(rect.width as u32, rect.height as u32);
@@ -698,6 +707,10 @@ impl SpriteInfo {
         result
     }
 
+    fn draw_clear_all(&self) {
+        self.draw_clear_requests.borrow_mut().push(TextureId(!0, SpriteType::Sd, !0));
+    }
+
     fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
         let tex_id = this.tex_id();
         let mut files = match this.files.try_borrow_mut() {
@@ -731,45 +744,66 @@ impl SpriteInfo {
         framedef_bx.pack_start(&framedef_label, false, false, 0);
         framedef_bx.pack_start(&framedef_frame, true, true, 0);
 
-        let grid = gtk::Grid::new();
-        grid.set_column_spacing(5);
-        grid.set_row_spacing(5);
         let mut checkboxes = Vec::with_capacity(layer_names.len());
-        let prefix_label = gtk::Label::new(Some("Filename prefix"));
-        let prefix_prefix = format!("{:03}_{}", tex_id.0, type_lowercase);
-        prefix_label.set_halign(gtk::Align::Start);
-        grid.attach(&prefix_label, 2, 0, 1, 1);
-        for (i, name) in layer_names.iter().enumerate() {
-            let row = i as i32 + 1;
-            let tex_size = file.texture_size(i);
+        let mut grp_prefix = None;
+        let is_anim = file.is_anim();
+        let layers_bx = if is_anim {
+            let grid = gtk::Grid::new();
+            grid.set_column_spacing(5);
+            grid.set_row_spacing(5);
+            let prefix_label = gtk::Label::new(Some("Filename prefix"));
+            let prefix_prefix = format!("{:03}_{}", tex_id.0, type_lowercase);
+            prefix_label.set_halign(gtk::Align::Start);
+            grid.attach(&prefix_label, 2, 0, 1, 1);
+            for (i, name) in layer_names.iter().enumerate() {
+                let row = i as i32 + 1;
+                let tex_size = file.texture_size(i);
 
-            let checkbox = gtk::CheckButton::new();
-            grid.attach(&checkbox, 0, row, 1, 1);
-            let label = gtk::Label::new(Some(&**name));
-            grid.attach(&label, 1, row, 1, 1);
-            label.set_halign(gtk::Align::Start);
+                let checkbox = gtk::CheckButton::new();
+                grid.attach(&checkbox, 0, row, 1, 1);
+                let label = gtk::Label::new(Some(&**name));
+                grid.attach(&label, 1, row, 1, 1);
+                label.set_halign(gtk::Align::Start);
 
+                let (entry, frame) = int_entry::entry();
+                frame.set_hexpand(true);
+
+                if tex_size.is_none() {
+                    checkbox.set_sensitive(false);
+                    label.set_sensitive(false);
+                    entry.set_sensitive(false);
+                    checkbox.set_active(false);
+                } else {
+                    checkbox.set_active(true);
+                    entry.set_text(&format!("{}_{}", prefix_prefix, name));
+                }
+                let e = entry.clone();
+                checkbox.connect_toggled(move |s| {
+                    e.set_sensitive(s.get_active());
+                });
+
+                grid.attach(&frame, 2, row, 1, 1);
+                checkboxes.push((checkbox, entry));
+            }
+            label_section("Layers to export", &grid)
+        } else {
             let (entry, frame) = int_entry::entry();
             frame.set_hexpand(true);
-
-            if tex_size.is_none() {
-                checkbox.set_sensitive(false);
-                label.set_sensitive(false);
-                entry.set_sensitive(false);
-                checkbox.set_active(false);
-            } else {
-                checkbox.set_active(true);
-                entry.set_text(&format!("{}_{}", prefix_prefix, name));
-            }
-            let e = entry.clone();
-            checkbox.connect_toggled(move |s| {
-                e.set_sensitive(s.get_active());
-            });
-
-            grid.attach(&frame, 2, row, 1, 1);
-            checkboxes.push((checkbox, entry));
-        }
-        let layers_bx = label_section("Layers to export", &grid);
+            let text;
+            let prefix = match file.path().file_name() {
+                Some(x) => {
+                    text = x.to_string_lossy();
+                    match text.find(".") {
+                        Some(x) => &text[..x],
+                        None => &text,
+                    }
+                }
+                None => "Unk".into(),
+            };
+            entry.set_text(&prefix);
+            grp_prefix = Some(entry.clone());
+            label_section("Filename prefix", &frame)
+        };
 
         let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
         let ok_button = gtk::Button::new_with_label("Export");
@@ -785,17 +819,6 @@ impl SpriteInfo {
                 Some(s) => s.into(),
                 None => return,
             };
-            let framedef: PathBuf = match framedef_entry.get_text() {
-                Some(s) => s.into(),
-                None => return,
-            };
-            let layers_to_export = checkboxes.iter().map(|(check, entry)| {
-                if check.get_active() {
-                    Some(entry.get_text().unwrap_or_else(|| String::new()))
-                } else {
-                    None
-                }
-            }).collect::<Vec<_>>();
 
             let tex_id = s.tex_id();
             let mut files = match s.files.try_borrow_mut() {
@@ -807,11 +830,35 @@ impl SpriteInfo {
                 _ => return,
             };
 
-            match export_frames(&file, tex_id.1, &path, &framedef, &layers_to_export) {
+            let layers_to_export;
+            let result = if is_anim {
+                let framedef: PathBuf = match framedef_entry.get_text() {
+                    Some(s) => s.into(),
+                    None => return,
+                };
+
+                layers_to_export = checkboxes.iter().map(|(check, entry)| {
+                    if check.get_active() {
+                        Some(entry.get_text().unwrap_or_else(|| String::new()))
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<_>>();
+                export_frames(&file, tex_id.1, &path, &framedef, &layers_to_export)
+            } else {
+                let prefix = grp_prefix.as_ref()
+                    .and_then(|x| x.get_text()).unwrap_or_else(String::new);
+                layers_to_export = Vec::new();
+                export_grp(&file, &path, &prefix)
+            };
+            match result {
                 Ok(()) => {
-                    let frame_count =
+                    let frame_count = if is_anim {
                         layers_to_export.iter().filter(|x| x.is_some()).count() *
-                        file.frames().map(|x| x.len()).unwrap_or(0);
+                        file.frames().map(|x| x.len()).unwrap_or(0)
+                    } else {
+                        file.layer_count()
+                    };
                     let msg =
                         format!("Wrote {} frames to {}", frame_count, path.to_string_lossy());
                     let dialog = gtk::MessageDialog::new(
@@ -848,13 +895,21 @@ impl SpriteInfo {
         button_bx.pack_end(&cancel_button, false, false, 0);
         button_bx.pack_end(&ok_button, false, false, 0);
         bx.pack_start(&filename_bx, false, false, 0);
-        bx.pack_start(&framedef_bx, false, false, 0);
+        if is_anim {
+            bx.pack_start(&framedef_bx, false, false, 0);
+        }
         bx.pack_start(&layers_bx, false, false, 0);
         bx.pack_start(&button_bx, false, false, 0);
         window.add(&bx);
         window.set_border_width(10);
         window.set_property_default_width(350);
-        window.set_title(&format!("Export frames of {:?} image {}", tex_id.1, tex_id.0));
+        if is_anim {
+            window.set_title(&format!("Export frames of {:?} image {}", tex_id.1, tex_id.0));
+        } else {
+            if let Some(filename) = file.path().file_name() {
+                window.set_title(&format!("Export frames of {}", filename.to_string_lossy()));
+            }
+        }
         window.set_modal(true);
         window.set_transient_for(Some(parent));
         window.show_all();
@@ -875,47 +930,80 @@ impl SpriteInfo {
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
 
-        let framedef = Rc::new(
-            select_dir::SelectFile::new(&window, "import_frames", "Text files", "*.json")
-        );
-        let framedef_inner_bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        framedef_inner_bx.pack_start(&framedef.widget(), false, false, 0);
+        let is_anim = file.is_anim();
+        let mut framedef_filename = None;
         let framedef_status = gtk::Label::new(None);
-        framedef_status.set_halign(gtk::Align::Start);
-        framedef_inner_bx.pack_start(&framedef_status, false, false, 5);
-        let framedef_bx = label_section("Frame info file", &framedef_inner_bx);
-        let framedef_filename = framedef.text().and_then(|x| match x.is_empty() {
-            true => None,
-            false => Some(x),
-        });
+        let framedef;
+        let framedef_bx = if is_anim {
+            framedef = Rc::new(
+                select_dir::SelectFile::new(&window, "import_frames", "Text files", "*.json")
+            );
+            let framedef_inner_bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            framedef_inner_bx.pack_start(&framedef.widget(), false, false, 0);
+            framedef_status.set_halign(gtk::Align::Start);
+            framedef_inner_bx.pack_start(&framedef_status, false, false, 5);
+            framedef_filename = framedef.text().and_then(|x| match x.is_empty() {
+                true => None,
+                false => Some(x),
+            });
+            label_section("Frame info file", &framedef_inner_bx)
+        } else {
+            framedef = Rc::new(
+                select_dir::SelectFile::new(&window, "import_frames_grp", "PNG files", "*.png")
+            );
+            let inner_bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            inner_bx.pack_start(&framedef.widget(), false, false, 0);
+            label_section("First frame", &inner_bx)
+        };
 
-        let grid = gtk::Grid::new();
-        grid.set_column_spacing(5);
-        grid.set_row_spacing(5);
         let mut checkboxes = Vec::with_capacity(layer_names.len());
-        for (i, name) in layer_names.iter().enumerate() {
-            let row = i as i32 + 1;
+        let mut grp_format = None;
+        let tex_formats = file.texture_formats();
+        let layers_bx = if is_anim {
+            let grid = gtk::Grid::new();
+            grid.set_column_spacing(5);
+            grid.set_row_spacing(5);
 
-            let checkbox = gtk::CheckButton::new();
-            grid.attach(&checkbox, 0, row, 1, 1);
-            checkbox.set_sensitive(false);
+            for (i, name) in layer_names.iter().enumerate() {
+                let row = i as i32 + 1;
 
-            let label = gtk::Label::new(Some(&**name));
-            grid.attach(&label, 1, row, 1, 1);
-            label.set_halign(gtk::Align::Start);
+                let checkbox = gtk::CheckButton::new();
+                grid.attach(&checkbox, 0, row, 1, 1);
+                checkbox.set_sensitive(false);
+
+                let label = gtk::Label::new(Some(&**name));
+                grid.attach(&label, 1, row, 1, 1);
+                label.set_halign(gtk::Align::Start);
+                let format = gtk::ComboBoxText::new();
+                format.append_text("DXT1");
+                format.append_text("DXT5");
+                format.append_text("Monochrome");
+                grid.attach(&format, 2, row, 1, 1);
+
+                checkboxes.push((checkbox, format));
+            }
+            label_section("Layers", &grid)
+        } else {
             let format = gtk::ComboBoxText::new();
             format.append_text("DXT1");
             format.append_text("DXT5");
             format.append_text("Monochrome");
-            grid.attach(&format, 2, row, 1, 1);
+            if let Some(Ok(Some(tex_f))) = tex_formats.get(0) {
+                format.set_active(match tex_f {
+                    anim::TextureFormat::Dxt1 => 0,
+                    anim::TextureFormat::Dxt5 => 1,
+                    anim::TextureFormat::Monochrome => 2,
+                });
+            }
 
-            checkboxes.push((checkbox, format));
-        }
-        let layers_bx = label_section("Layers", &grid);
+            let bx = label_section("Encode format", &format);
+            grp_format = Some(format);
+            bx
+        };
 
         let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
         let ok_button = gtk::Button::new_with_label("Import");
-        ok_button.set_sensitive(false);
+        ok_button.set_sensitive(!is_anim);
         let cancel_button = gtk::Button::new_with_label("Cancel");
         let w = window.clone();
         cancel_button.connect_clicked(move |_| {
@@ -928,9 +1016,21 @@ impl SpriteInfo {
         let fi_entry = framedef.clone();
         let c = checkboxes.clone();
         ok_button.connect_clicked(move |_| {
+            // Used for grps
+            let filename_prefix;
             let dir = match fi_entry.text() {
                 Some(s) => {
                     let mut buf: PathBuf = s.into();
+                    filename_prefix = match buf.file_name() {
+                        Some(s) => {
+                            let text = s.to_string_lossy();
+                            match text.find("_000.") {
+                                Some(s) => Some((&text[..s]).to_string()),
+                                None => None,
+                            }
+                        }
+                        None => None,
+                    };
                     buf.pop();
                     if !buf.is_dir() {
                         return;
@@ -939,48 +1039,99 @@ impl SpriteInfo {
                 }
                 None => return,
             };
-            let formats = c.iter().map(|x| {
-                Ok(match x.1.get_active() {
-                    0 => anim::TextureFormat::Dxt1,
-                    1 => anim::TextureFormat::Dxt5,
-                    2 => anim::TextureFormat::Monochrome,
-                    _ => {
-                        if x.0.get_active() {
-                            return Err(());
-                        }
-                        // Just a dummy value since the layer is unused
-                        anim::TextureFormat::Monochrome
-                    }
-                })
-            }).collect::<Result<Vec<_>, ()>>();
-            let formats = match formats {
-                Ok(o) => o,
-                Err(()) => {
-                    let dialog = gtk::MessageDialog::new(
-                        Some(&w),
-                        gtk::DialogFlags::MODAL,
-                        gtk::MessageType::Error,
-                        gtk::ButtonsType::Ok,
-                        "Format not specified for every layer",
-                    );
-                    dialog.run();
-                    dialog.destroy();
-                    return;
-                }
-            };
-            let fi = fi.borrow();
-            let frame_info = match *fi {
-                Some(ref s) => s,
-                None => return,
-            };
             let mut files = s.files.borrow_mut();
-            match import_frames(&mut files, frame_info, &dir, &formats, tex_id.0, tex_id.1) {
-                Ok(()) => {
-                    let layer_count = formats.len();
-                    for layer in 0..layer_count {
-                        let id = TextureId(tex_id.0, tex_id.1, layer);
-                        s.draw_clear_requests.borrow_mut().push(id);
+            let result = if is_anim {
+                let formats = c.iter().map(|x| {
+                    Ok(match x.1.get_active() {
+                        0 => anim::TextureFormat::Dxt1,
+                        1 => anim::TextureFormat::Dxt5,
+                        2 => anim::TextureFormat::Monochrome,
+                        _ => {
+                            if x.0.get_active() {
+                                return Err(());
+                            }
+                            // Just a dummy value since the layer is unused
+                            anim::TextureFormat::Monochrome
+                        }
+                    })
+                }).collect::<Result<Vec<_>, ()>>();
+                let formats = match formats {
+                    Ok(o) => o,
+                    Err(()) => {
+                        let dialog = gtk::MessageDialog::new(
+                            Some(&w),
+                            gtk::DialogFlags::MODAL,
+                            gtk::MessageType::Error,
+                            gtk::ButtonsType::Ok,
+                            "Format not specified for every layer",
+                        );
+                        dialog.run();
+                        dialog.destroy();
+                        return;
                     }
+                };
+                let fi = fi.borrow();
+                let frame_info = match *fi {
+                    Some(ref s) => s,
+                    None => return,
+                };
+
+                let result =
+                    import_frames(&mut files, frame_info, &dir, &formats, tex_id.0, tex_id.1);
+                result.map(|()| frame_info.layers.len() as u32 * frame_info.frame_count)
+            } else {
+                let format = match grp_format {
+                    Some(ref s) => match s.get_active() {
+                        0 => Ok(anim::TextureFormat::Dxt1),
+                        1 => Ok(anim::TextureFormat::Dxt5),
+                        2 => Ok(anim::TextureFormat::Monochrome),
+                        _ => Err(()),
+                    },
+                    None => return,
+                };
+                let format = match format {
+                    Ok(o) => o,
+                    Err(()) => {
+                        let dialog = gtk::MessageDialog::new(
+                            Some(&w),
+                            gtk::DialogFlags::MODAL,
+                            gtk::MessageType::Error,
+                            gtk::ButtonsType::Ok,
+                            "Format not specified",
+                        );
+                        dialog.run();
+                        dialog.destroy();
+                        return;
+                    }
+                };
+                let filename_prefix = match filename_prefix {
+                    Some(o) => o,
+                    None => {
+                        let dialog = gtk::MessageDialog::new(
+                            Some(&w),
+                            gtk::DialogFlags::MODAL,
+                            gtk::MessageType::Error,
+                            gtk::ButtonsType::Ok,
+                            "Invalid first frame filename",
+                        );
+                        dialog.run();
+                        dialog.destroy();
+                        return;
+                    }
+                };
+                let result = import_frames_grp(
+                    &mut files,
+                    &dir,
+                    &filename_prefix,
+                    format,
+                    tex_id.0,
+                    tex_id.1,
+                );
+                result
+            };
+            match result {
+                Ok(frame_count) => {
+                    s.draw_clear_all();
                     if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
                         s.changed_ty(tex_id, &mut file);
                     }
@@ -989,7 +1140,6 @@ impl SpriteInfo {
                         a.activate(Some(&true.to_variant()));
                     }
 
-                    let frame_count = frame_info.layers.len() * frame_info.frame_count as usize;
                     let msg = format!("Imported {} frames", frame_count);
                     let dialog = gtk::MessageDialog::new(
                         Some(&w),
@@ -1025,61 +1175,62 @@ impl SpriteInfo {
         });
 
         let ok = ok_button.clone();
-        let tex_formats = file.texture_formats();
-        let framedef_set = Rc::new(move |filename: &str| {
-            match parse_frame_info(Path::new(filename)) {
-                Ok(o) => {
-                    ok.set_sensitive(true);
-                    for &(ref check, ref format) in &checkboxes {
-                        check.set_active(false);
-                        format.set_sensitive(false);
-                        format.set_active(-1);
-                    }
-                    for &(i, _) in &o.layers {
-                        if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
-                            check.set_active(true);
-                            let tex_f = tex_formats.get(i as usize)
-                                .and_then(|x| x.as_ref().ok())
-                                .and_then(|x| x.as_ref());
-                            if let Some(tex_f) = tex_f {
-                                format.set_sensitive(true);
-                                format.set_active(match tex_f {
-                                    anim::TextureFormat::Dxt1 => 0,
-                                    anim::TextureFormat::Dxt5 => 1,
-                                    anim::TextureFormat::Monochrome => 2,
-                                });
+        if is_anim {
+            let framedef_set = Rc::new(move |filename: &str| {
+                match parse_frame_info(Path::new(filename)) {
+                    Ok(o) => {
+                        ok.set_sensitive(true);
+                        for &(ref check, ref format) in &checkboxes {
+                            check.set_active(false);
+                            format.set_sensitive(false);
+                            format.set_active(-1);
+                        }
+                        for &(i, _) in &o.layers {
+                            if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
+                                check.set_active(true);
+                                let tex_f = tex_formats.get(i as usize)
+                                    .and_then(|x| x.as_ref().ok())
+                                    .and_then(|x| x.as_ref());
+                                if let Some(tex_f) = tex_f {
+                                    format.set_sensitive(true);
+                                    format.set_active(match tex_f {
+                                        anim::TextureFormat::Dxt1 => 0,
+                                        anim::TextureFormat::Dxt5 => 1,
+                                        anim::TextureFormat::Monochrome => 2,
+                                    });
+                                }
                             }
                         }
+                        *frame_info.borrow_mut() = Some(o);
+                        framedef_status.set_text("");
                     }
-                    *frame_info.borrow_mut() = Some(o);
-                    framedef_status.set_text("");
+                    Err(e) => {
+                        ok.set_sensitive(false);
+                        for &(ref check, ref format) in &checkboxes {
+                            check.set_active(false);
+                            format.set_sensitive(false);
+                            format.set_active(-1);
+                        }
+                        let mut msg = format!("Frame info invalid:\n");
+                        for c in e.causes() {
+                            use std::fmt::Write;
+                            writeln!(msg, "{}", c).unwrap();
+                        }
+                        // Remove last newline
+                        msg.pop();
+                        *frame_info.borrow_mut() = None;
+                        framedef_status.set_text(&msg);
+                    }
                 }
-                Err(e) => {
-                    ok.set_sensitive(false);
-                    for &(ref check, ref format) in &checkboxes {
-                        check.set_active(false);
-                        format.set_sensitive(false);
-                        format.set_active(-1);
-                    }
-                    let mut msg = format!("Frame info invalid:\n");
-                    for c in e.causes() {
-                        use std::fmt::Write;
-                        writeln!(msg, "{}", c).unwrap();
-                    }
-                    // Remove last newline
-                    msg.pop();
-                    *frame_info.borrow_mut() = None;
-                    framedef_status.set_text(&msg);
-                }
+            });
+            if let Some(filename) = framedef_filename {
+                framedef_set(&filename);
             }
-        });
-        if let Some(filename) = framedef_filename {
-            framedef_set(&filename);
+            let fun = framedef_set.clone();
+            framedef.on_change(move |filename| {
+                fun(filename);
+            });
         }
-        let fun = framedef_set.clone();
-        framedef.on_change(move |filename| {
-            fun(filename);
-        });
 
         button_bx.pack_end(&cancel_button, false, false, 0);
         button_bx.pack_end(&ok_button, false, false, 0);
@@ -1089,7 +1240,13 @@ impl SpriteInfo {
         window.add(&bx);
         window.set_border_width(10);
         window.set_property_default_width(350);
-        window.set_title(&format!("Import frames for {:?} image {}", tex_id.1, tex_id.0));
+        if is_anim {
+            window.set_title(&format!("Import frames for {:?} image {}", tex_id.1, tex_id.0));
+        } else {
+            if let Some(filename) = file.path().file_name() {
+                window.set_title(&format!("Import frames of {}", filename.to_string_lossy()));
+            }
+        }
         window.set_modal(true);
         window.set_transient_for(Some(parent));
         window.show_all();
@@ -1477,7 +1634,11 @@ impl SpriteInfo {
                 let variant = (data.height as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk3b", Some(&variant));
             }
-            let frame_count = file.frames().map(|x| x.len() as u32).unwrap_or(0);
+            let frame_count = if file.is_anim() {
+                file.frames().map(|x| x.len() as u32).unwrap_or(0)
+            } else {
+                file.layer_count() as u32
+            };
             let variant = frame_count.to_variant();
             self.sprite_actions.activate_action("frame_count", Some(&variant));
         } else {
@@ -1501,7 +1662,7 @@ impl SpriteInfo {
         match *file {
             Some(ref file) => {
                 let names = file.layer_names();
-                for name in names {
+                for name in names.iter() {
                     self.selector.list.push(name);
                 }
                 layer_count = names.len();
@@ -1582,7 +1743,6 @@ impl SpriteInfo {
             }
             SpriteFiles::SingleFile(_) => {
                 self.set_enable_animset_actions(false);
-                println!("TODO");
             }
             SpriteFiles::MainSdOnly { .. } => {
                 self.set_enable_animset_actions(false);
@@ -1792,6 +1952,7 @@ fn open(filename: &Path) {
                     *files = f;
                 });
             }
+            ui.info.draw_clear_all();
             ui.info.sprite_actions.activate_action("select_sd", None);
             ui.info.select_sprite(0);
             enable_file_actions(&ui.app);
@@ -1821,6 +1982,7 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     let filter = gtk::FileFilter::new();
     filter.add_pattern("*.anim");
     filter.add_pattern("*.dds.grp");
+    filter.add_pattern("*.dds.vr4");
     gtk::FileFilterExt::set_name(&filter, "Valid files");
     dialog.add_filter(&filter);
     let filter = gtk::FileFilter::new();
@@ -1902,6 +2064,32 @@ fn create_ui(app: &gtk::Application) -> Ui {
         list,
         info,
     }
+}
+
+fn export_grp(file: &files::File, path: &Path, prefix: &str) -> Result<(), Error> {
+    use std::io::BufWriter;
+
+    use png::HasParameters;
+
+    if !path.is_dir() {
+        return Err(format_err!("{} is not a directory", path.to_string_lossy()));
+    }
+
+    for i in 0..file.layer_count() {
+        let texture = file.texture(i)?;
+
+        let path = path.join(format!("{}_{:03}.png", prefix, i));
+        let out = File::create(&path)
+            .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
+        let mut out = BufWriter::new(out);
+
+        let mut encoder = png::Encoder::new(out, texture.width, texture.height);
+        encoder.set(png::ColorType::RGBA);
+        let mut encoder = encoder.write_header()?;
+        encoder.write_image_data(&texture.data)?;
+    }
+
+    Ok(())
 }
 
 // Won't export layers with None prefix,
@@ -2022,6 +2210,49 @@ fn export_frames(
     serde_json::to_writer_pretty(&mut frame_info_file, &frame_info)?;
 
     Ok(())
+}
+
+fn import_frames_grp(
+    files: &mut files::Files,
+    dir: &Path,
+    filename_prefix: &str,
+    format: anim::TextureFormat,
+    sprite: usize,
+    ty: SpriteType,
+) -> Result<u32, Error> {
+    use png::HasParameters;
+
+    let mut frame_count = 0;
+    let mut frames = Vec::new();
+    for i in 0.. {
+        let path = dir.join(format!("{}_{:03}.png", filename_prefix, i));
+        if !path.is_file() {
+            frame_count = i;
+            break;
+        }
+
+        let file = File::open(&path)
+            .with_context(|_| format!("Unable to open {}", path.to_string_lossy()))?;
+        let mut decoder = png::Decoder::new(file);
+        decoder.set(png::Transformations::IDENTITY);
+        let (info, mut reader) = decoder.read_info()
+            .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
+        let mut buf = vec![0; info.buffer_size()];
+        reader.next_frame(&mut buf)
+            .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
+        let data = anim_encoder::encode(&buf, info.width, info.height, format);
+        frames.push((ddsgrp::Frame {
+            unknown: 0,
+            width: u16::try_from(info.width)
+                .map_err(|_| format_err!("Frame {} width too large", i))?,
+            height: u16::try_from(info.height)
+                .map_err(|_| format_err!("Frame {} width too large", i))?,
+            size: data.len() as u32,
+            offset: !0,
+        }, data));
+    }
+    files.set_grp_changes(sprite, ty, frames);
+    Ok(frame_count)
 }
 
 fn import_frames(

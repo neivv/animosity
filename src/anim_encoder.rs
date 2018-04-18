@@ -1081,3 +1081,29 @@ fn dxt5_alpha7(block: &[[u8; 4]; 16]) -> u64 {
     }
     (lookup << 16) | ((second as u64) << 8) | (first as u64)
 }
+
+pub fn encode(rgba: &[u8], width: u32, height: u32, format: anim::TextureFormat) -> Vec<u8> {
+    assert_eq!(rgba.len(), (width * height) as usize * 4);
+    let frames = [(
+        vec![(0, FrameOffset { x: 0, y: 0 })],
+        LayerFrames {
+            frames: vec![(Rc::new(Frame {
+                width,
+                height,
+                // ugh
+                data: rgba.into(),
+            }), (0, 0))],
+            width,
+            height,
+        },
+        TexCoords {
+            x: 0,
+            y: 0,
+        }
+    )];
+    match format {
+        anim::TextureFormat::Dxt1 => encode_dxt1(&frames, 0, width, height),
+        anim::TextureFormat::Dxt5 => encode_dxt5(&frames, 0, width, height),
+        anim::TextureFormat::Monochrome => encode_monochrome(&frames, 0, width, height),
+    }
+}
