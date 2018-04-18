@@ -56,6 +56,8 @@ fn set_config_entry(id: &str, value: &str) -> Option<()> {
     };
     file.seek(io::SeekFrom::Start(0)).ok()?;
     serde_json::to_writer_pretty(&mut file, &json).ok()?;
+    let len = file.seek(io::SeekFrom::Current(0)).ok()?;
+    file.set_len(len).ok()?;
     Some(())
 }
 
