@@ -1449,6 +1449,20 @@ impl SpriteInfo {
         action(group, "select_layer", true, Some("u"), move |_, param| {
             if let Some(layer) = param.as_ref().and_then(|x| x.get::<u32>()) {
                 s.selected_layer.store(layer as usize, Ordering::SeqCst);
+                {
+                    let tex_id = s.tex_id();
+                    let mut files = match s.files.try_borrow_mut() {
+                        Ok(o) => o,
+                        _ => return,
+                    };
+                    let file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
+                        error!("Couldn't open {:?}: {}", tex_id, e);
+                        None
+                    });
+                    if let Some(mut file) = file {
+                        s.update_tex_size(&mut file);
+                    }
+                }
                 s.draw_area.queue_draw();
             }
         });
@@ -1592,16 +1606,30 @@ impl SpriteInfo {
         self.changed_ty(tex_id, &mut file);
     }
 
+    fn update_tex_size(&self, file: &mut files::File) {
+        let tex_id = self.tex_id();
+        let variant = {
+            let tex_sizes = file.texture_size(tex_id.2);
+            if let Some(t) = tex_sizes {
+                format!("{}x{}", t.width, t.height).to_variant()
+            } else {
+                "0x0".to_variant()
+            }
+        };
+        self.sprite_actions.activate_action("texture_size", Some(&variant));
+    }
+
     fn changed_ty(&self, tex_id: TextureId, file: &mut Option<files::File>) {
         let ty = tex_id.1;
         self.set_layers(file);
         if let Some(ref mut file) = *file {
-            let variant = true.to_variant();
-            self.sprite_actions.activate_action("sprite_exists", Some(&variant));
+            let is_anim = file.is_anim();
+            // sprite_exists is a bit poorly chosen name
+            self.sprite_actions.activate_action("sprite_exists", Some(&is_anim.to_variant()));
             let sprite_data = file.sprite_values();
             let sprite_data = sprite_data.as_ref();
             if let Some(a) = lookup_action(&self.sprite_actions, "enable_ref") {
-                if ty == SpriteType::Sd {
+                if ty == SpriteType::Sd && is_anim {
                     a.set_enabled(true);
                     if let Some(img) = file.image_ref() {
                         a.activate(Some(&true.to_variant()));
@@ -1616,15 +1644,7 @@ impl SpriteInfo {
                     a.set_enabled(false);
                 }
             }
-            let variant = {
-                let tex_sizes = file.texture_size(tex_id.2);
-                if let Some(t) = tex_sizes {
-                    format!("{}x{}", t.width, t.height).to_variant()
-                } else {
-                    "0x0".to_variant()
-                }
-            };
-            self.sprite_actions.activate_action("texture_size", Some(&variant));
+            self.update_tex_size(file);
             if let Some(data) = sprite_data {
                 let variant = (data.unk2 as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk2", Some(&variant));
@@ -1633,7 +1653,7 @@ impl SpriteInfo {
                 let variant = (data.height as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk3b", Some(&variant));
             }
-            let frame_count = if file.is_anim() {
+            let frame_count = if is_anim {
                 file.frames().map(|x| x.len() as u32).unwrap_or(0)
             } else {
                 file.layer_count() as u32
@@ -1728,17 +1748,6 @@ impl SpriteInfo {
                     a.set_enabled(has_mainsd);
                 }
                 self.file_list.set_text(&buf);
-
-                let tex_id = self.tex_id();
-                let mut files = match self.files.try_borrow_mut() {
-                    Ok(o) => o,
-                    _ => return,
-                };
-                let mut file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
-                    error!("Couldn't open {:?}: {}", tex_id, e);
-                    None
-                });
-                self.changed_ty(tex_id, &mut file);
             }
             SpriteFiles::SingleFile(_) => {
                 self.set_enable_animset_actions(false);
@@ -1749,6 +1758,16 @@ impl SpriteInfo {
                 self.file_list.set_text(&buf);
             }
         }
+        let tex_id = self.tex_id();
+        let mut files = match self.files.try_borrow_mut() {
+            Ok(o) => o,
+            _ => return,
+        };
+        let mut file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
+            error!("Couldn't open {:?}: {}", tex_id, e);
+            None
+        });
+        self.changed_ty(tex_id, &mut file);
     }
 }
 
