@@ -181,7 +181,7 @@ impl Anim {
         let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
         out.write_u32::<LE>(!0)?;
         if let Some(changes) = textures {
-            write_textures_patched(&mut out, changes)?;
+            write_textures_patched(&mut out, changes, layer_names.len())?;
         } else {
             let mut read = self.read.lock().unwrap();
             write_textures_unchanged(&mut out, &mut *read, &self.sprite.textures)?;
@@ -375,7 +375,7 @@ impl MainSd {
                     let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
                     out.write_u32::<LE>(!0)?;
                     if let Some(changes) = texture_changes {
-                        write_textures_patched(&mut out, changes)?;
+                        write_textures_patched(&mut out, changes, layer_names.len())?;
                     } else {
                         let textures = match self.sprites[i] {
                             SpriteType::Ref(_) => {
@@ -785,9 +785,10 @@ fn write_textures_unchanged<W: Write + Seek, R: ReadSeek>(
 fn write_textures_patched<W: Write + Seek>(
     out: &mut W,
     changes: &TexChanges,
+    texture_count: usize,
 ) -> Result<(), Error> {
     let start = out.seek(SeekFrom::Current(0))?;
-    let mut zeroes = io::repeat(0).take(changes.textures.len() as u64 * 0xc);
+    let mut zeroes = io::repeat(0).take(changes.textures.len().max(texture_count) as u64 * 0xc);
     io::copy(&mut zeroes, out)?;
     for (i, tex) in changes.textures.iter().enumerate() {
         if let Some((ref tex, ref bytes)) = *tex {
