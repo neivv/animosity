@@ -1,11 +1,12 @@
 [package]
 name = "animosity"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Markus Heikkinen <ittevien@gmail.com>"]
 
 [profile.release]
 debug = 1
 overflow-checks = true
+lto = true
 
 [dependencies]
 app_dirs = "1.2.1"
