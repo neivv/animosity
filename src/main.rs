@@ -1833,6 +1833,72 @@ fn create_menu() -> gio::Menu {
     menu
 }
 
+// Requires state to not be borrowed
+fn save() -> Result<(), Error> {
+    let files = STATE.with(|x| {
+        let state = x.borrow();
+        state.files.clone()
+    });
+    let result = {
+        let mut files = files.borrow_mut();
+        files.save()
+    };
+    if let Err(ref e) = result {
+        use std::fmt::Write;
+        let mut msg = format!("Unable to save:\n");
+        for c in e.causes() {
+            writeln!(msg, "{}", c).unwrap();
+        }
+        // Remove last newline
+        msg.pop();
+        ui().message(&msg);
+    } else {
+        let ui = ui();
+        if let Some(a) = lookup_action(&ui.info.sprite_actions, "is_dirty") {
+            a.activate(Some(&false.to_variant()));
+        }
+    }
+    result
+}
+
+// Return true if the user didn't press cancel
+fn check_unsaved_files() -> bool {
+    let has_changes = {
+        let files = STATE.with(|x| {
+            let state = x.borrow();
+            state.files.clone()
+        });
+        let files = files.borrow();
+        files.has_changes()
+    };
+    if has_changes {
+        let ui = ui();
+        let msg = format!("Save changes made to open files?");
+        let dialog = gtk::MessageDialog::new(
+            Some(&ui.main_window),
+            gtk::DialogFlags::MODAL,
+            gtk::MessageType::Question,
+            gtk::ButtonsType::None,
+            &msg,
+        );
+        dialog.add_button("Save", 1);
+        dialog.add_button("Discard changes", 2);
+        dialog.add_button("Cancel", 3);
+        let result = dialog.run();
+        dialog.destroy();
+        match result {
+            1 => {
+                let result = save();
+                result.is_ok()
+            }
+            2 => true,
+            _ => false,
+        }
+    } else {
+        true
+    }
+}
+
 fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
     fn action<F>(app: &gtk::Application, name: &str, enabled: bool, fun: F) -> gio::SimpleAction
     where F: Fn(&gio::SimpleAction, &Option<glib::Variant>) + 'static
@@ -1843,40 +1909,29 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
         app.add_action(&action);
         action
     }
+    main_window.connect_delete_event(|_, _| {
+        if check_unsaved_files() {
+            Inhibit(false)
+        } else {
+            Inhibit(true)
+        }
+    });
     let a = app.clone();
-    action(app, "exit", true, move |_, _| a.quit());
+    action(app, "exit", true, move |_, _| {
+        if check_unsaved_files() {
+            a.quit()
+        }
+    });
     let w = main_window.clone();
     action(app, "open", true, move |_, _| {
-        // TODO SAVE IF CHANGED
-        println!("TODO CHECK SAVE");
-        if let Some(filename) = open_file_dialog(&w) {
-            open(&filename);
+        if check_unsaved_files() {
+            if let Some(filename) = open_file_dialog(&w) {
+                open(&filename);
+            }
         }
     });
     action(app, "save", false, move |_, _| {
-        let files = STATE.with(|x| {
-            let state = x.borrow();
-            state.files.clone()
-        });
-        let result = {
-            let mut files = files.borrow_mut();
-            files.save()
-        };
-        if let Err(e) = result {
-            use std::fmt::Write;
-            let mut msg = format!("Unable to save:\n");
-            for c in e.causes() {
-                writeln!(msg, "{}", c).unwrap();
-            }
-            // Remove last newline
-            msg.pop();
-            ui().message(&msg);
-        } else {
-            let ui = ui();
-            if let Some(a) = lookup_action(&ui.info.sprite_actions, "is_dirty") {
-                a.activate(Some(&false.to_variant()));
-            }
-        }
+        let _ = save();
     });
     action(app, "exportFrames", false, move |_, _| {
         let ui = ui();
