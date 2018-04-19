@@ -97,11 +97,11 @@ impl Context {
             let mut input = bytes.as_ptr();
             for _ in 0..bytes.len() / 0x10 {
                 for _ in 0..0x10 {
-                    let (r, g, b, a) = *input;
+                    let (r, g, b, _) = *input;
                     *out = b;
                     *out.offset(1) = g;
                     *out.offset(2) = r;
-                    *out.offset(3) = a;
+                    *out.offset(3) = 255;
                     out = out.offset(4);
                     input = input.offset(1);
                 }

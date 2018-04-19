@@ -683,7 +683,6 @@ impl SpriteInfo {
                     let surface = cairo::ImageSurface::create_for_data(
                         data.into_boxed_slice(),
                         |_| {},
-                        // TODO: This is premultiplied alpha, is the glium format too?
                         cairo::Format::ARgb32,
                         width as i32,
                         height as i32,
