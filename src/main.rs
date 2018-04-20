@@ -68,7 +68,41 @@ fn init_log() -> Result<(), fern::InitError> {
     Ok(())
 }
 
+fn init_panic_handler() {
+    std::panic::set_hook(Box::new(|info| {
+        use std::fmt::Write;
+
+        let mut msg = String::new();
+        match info.location() {
+            Some(s) => writeln!(msg, "Panic at {}:{}", s.file(), s.line()).unwrap(),
+            None => writeln!(msg, "Panic at unknown location").unwrap()
+        }
+        let payload = info.payload();
+        let panic_msg = match payload.downcast_ref::<&str>() {
+            Some(s) => s,
+            None => match payload.downcast_ref::<String>() {
+                Some(s) => &s[..],
+                None => "(???)",
+            },
+        };
+        writeln!(msg, "{}", panic_msg).unwrap();
+        error!("{}", msg);
+        let dialog = gtk::MessageDialog::new::<gtk::Window>(
+            None,
+            gtk::DialogFlags::MODAL,
+            gtk::MessageType::Error,
+            gtk::ButtonsType::Ok,
+            &msg,
+        );
+        dialog.set_title("Crash");
+        dialog.run();
+        dialog.destroy();
+        std::process::exit(3);
+    }));
+}
+
 fn main() {
+    init_panic_handler();
     let _ = init_log();
     let app = gtk::Application::new("a.b", gio::ApplicationFlags::empty())
         .unwrap_or_else(|e| panic!("Couldn't create app: {}", e));
