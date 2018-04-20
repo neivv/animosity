@@ -2383,6 +2383,32 @@ fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>
             }
             Ok(out)
         }
+        png::ColorType::Grayscale => {
+            if buf.len() != (info.width * info.height) as usize {
+                return Err(format_err!("Grayscale buffer size isn't w * h?"));
+            }
+            let mut out = vec![0; (info.width * info.height) as usize * 4];
+            for (out, input) in out.chunks_mut(4).zip(buf.chunks(1)) {
+                out[0] = input[0];
+                out[1] = input[0];
+                out[2] = input[0];
+                out[3] = 0xff;
+            }
+            Ok(out)
+        }
+        png::ColorType::GrayscaleAlpha => {
+            if buf.len() != (info.width * info.height) as usize * 2 {
+                return Err(format_err!("Grayscale + alpha buffer size isn't 2 * w * h?"));
+            }
+            let mut out = vec![0; (info.width * info.height) as usize * 4];
+            for (out, input) in out.chunks_mut(4).zip(buf.chunks(2)) {
+                out[0] = input[0];
+                out[1] = input[0];
+                out[2] = input[0];
+                out[3] = input[1];
+            }
+            Ok(out)
+        }
         _ => Err(format_err!("Unsupported color type {:?}", info.color_type)),
     }
 }
