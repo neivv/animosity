@@ -2347,6 +2347,8 @@ fn import_frames_grp(
         let mut buf = vec![0; info.buffer_size()];
         reader.next_frame(&mut buf)
             .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
+        let buf = arbitrary_png_to_rgba(buf, &info)
+            .with_context(|_| format!("Unsupported PNG {}", path.to_string_lossy()))?;
         let data = anim_encoder::encode(&buf, info.width, info.height, format);
         frames.push((ddsgrp::Frame {
             unknown: 0,
@@ -2360,6 +2362,29 @@ fn import_frames_grp(
     }
     files.set_grp_changes(sprite, ty, frames);
     Ok(frame_count)
+}
+
+fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>, Error> {
+    if info.bit_depth != png::BitDepth::Eight {
+        return Err(format_err!("Bit depth {:?} not supported", info.bit_depth));
+    }
+    match info.color_type {
+        png::ColorType::RGBA => Ok(buf),
+        png::ColorType::RGB => {
+            if buf.len() != (info.width * info.height) as usize * 3 {
+                return Err(format_err!("RGB buffer size isn't 3 * w * h?"));
+            }
+            let mut out = vec![0; (info.width * info.height) as usize * 4];
+            for (out, input) in out.chunks_mut(4).zip(buf.chunks(3)) {
+                out[0] = input[0];
+                out[1] = input[1];
+                out[2] = input[2];
+                out[3] = 0xff;
+            }
+            Ok(out)
+        }
+        _ => Err(format_err!("Unsupported color type {:?}", info.color_type)),
+    }
 }
 
 fn import_frames(
@@ -2390,6 +2415,8 @@ fn import_frames(
             let mut buf = vec![0; info.buffer_size()];
             reader.next_frame(&mut buf)
                 .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
+            let buf = arbitrary_png_to_rgba(buf, &info)
+                .with_context(|_| format!("Unsupported PNG {}", path.to_string_lossy()))?;
             let mut bounded = rgba_bounding_box(&buf, info.width, info.height);
             bounded.coords.x_offset = bounded.coords.x_offset.saturating_add(frame_info.offset_x);
             bounded.coords.y_offset = bounded.coords.y_offset.saturating_add(frame_info.offset_y);
