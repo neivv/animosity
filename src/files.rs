@@ -981,7 +981,10 @@ fn file_root_from_file(file: &Path) -> Option<&Path> {
             None
         }
     } else if filename.ends_with(".anim") && filename.starts_with("main_") {
-        if parent.eq_ignore_ascii_case("anim") {
+        // Nice that the valid images go from 000 to 999
+        let is_standard_name = filename.len() == 13 &&
+            filename.get(5..8).map(|x| x.chars().all(|x| x.is_numeric())).unwrap_or(false);
+        if is_standard_name && parent.eq_ignore_ascii_case("anim") {
             let l2 = parent_path.parent()?;
             if l2.file_name()?.to_str()?.eq_ignore_ascii_case("hd2") {
                 l2.parent()
@@ -1008,4 +1011,6 @@ fn test_file_root_from_file() {
     assert_eq!(file_root_from_file(Path::new("a/b/c/hd2/anim/main_000.anim")), Some(root));
     assert_eq!(file_root_from_file(Path::new("a/b/c/mainsd.anim")), None);
     assert_eq!(file_root_from_file(Path::new("a/b/c/a/main_000.anim")), None);
+    assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_nonstandard_name_000.anim")), None);
+    assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_1000.anim")), None);
 }
