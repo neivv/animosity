@@ -917,6 +917,7 @@ fn file_path<'a>(
     if ty == SpriteType::Sd {
         match sprites.get(sprite)? {
             SpriteFiles::AnimSet(_) => return mainsd_path,
+            SpriteFiles::MainSdOnly { .. } => return mainsd_path,
             _ => (),
         }
     }
