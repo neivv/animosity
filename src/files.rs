@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Cursor, Seek, Write};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use failure::{Error, ResultExt};
@@ -12,7 +12,7 @@ use ::SpriteType;
 
 pub struct Files {
     sprites: Vec<SpriteFiles>,
-    mainsd_anim: Option<(PathBuf, anim::MainSd)>,
+    mainsd_anim: Option<(PathBuf, anim::Anim)>,
     root_path: Option<PathBuf>,
     open_files: OpenFiles,
     edits: HashMap<(usize, SpriteType), Edit>,
@@ -53,7 +53,7 @@ struct EditValues {
 #[derive(Debug, Clone)]
 pub enum SpriteFiles {
     AnimSet(AnimFiles),
-    SingleFile(PathBuf),
+    DdsGrp(PathBuf),
     MainSdOnly {
         image_id: u32,
         name: String,
@@ -83,7 +83,7 @@ pub struct File<'a> {
 }
 
 pub enum FileLocation<'a> {
-    MainSd(usize, &'a anim::MainSd),
+    Multiple(usize, &'a anim::Anim),
     Separate(&'a anim::Anim),
     DdsGrp(&'a ddsgrp::DdsGrp),
 }
@@ -95,7 +95,7 @@ impl<'a> File<'a> {
 
     pub fn is_anim(&self) -> bool {
         match self.location {
-            FileLocation::MainSd(..) | FileLocation::Separate(..) => true,
+            FileLocation::Multiple(..) | FileLocation::Separate(..) => true,
             FileLocation::DdsGrp(..) => false,
         }
     }
@@ -113,7 +113,7 @@ impl<'a> File<'a> {
         }
         if let Some(Some(img_ref)) = self.image_ref {
             Ok(match self.location {
-                FileLocation::MainSd(_, ref mainsd) => mainsd.texture(img_ref as usize, layer)?,
+                FileLocation::Multiple(_, ref mainsd) => mainsd.texture(img_ref as usize, layer)?,
                 FileLocation::Separate(..) => {
                     return Err(format_err!("Ref in HD sprite"));
                 }
@@ -123,8 +123,8 @@ impl<'a> File<'a> {
             })
         } else {
             Ok(match self.location {
-                FileLocation::MainSd(sprite, ref mainsd) => mainsd.texture(sprite, layer)?,
-                FileLocation::Separate(ref file) => file.texture(layer)?,
+                FileLocation::Multiple(sprite, ref mainsd) => mainsd.texture(sprite, layer)?,
+                FileLocation::Separate(ref file) => file.texture(0, layer)?,
                 FileLocation::DdsGrp(ref grp) => grp.frame(layer)?,
             })
         }
@@ -168,7 +168,7 @@ impl<'a> File<'a> {
         }
         if let Some(Some(img_ref)) = self.image_ref {
             match self.location {
-                FileLocation::MainSd(_, mainsd) => mainsd.texture_formats(img_ref as usize),
+                FileLocation::Multiple(_, mainsd) => mainsd.texture_formats(img_ref as usize),
                 FileLocation::Separate(..) => {
                     warn!("Ref in HD sprite??");
                     return Vec::new()
@@ -180,8 +180,8 @@ impl<'a> File<'a> {
             }
         } else {
             match self.location {
-                FileLocation::MainSd(sprite, mainsd) => mainsd.texture_formats(sprite),
-                FileLocation::Separate(file) => file.texture_formats(),
+                FileLocation::Multiple(sprite, mainsd) => mainsd.texture_formats(sprite),
+                FileLocation::Separate(file) => file.texture_formats(0),
                 FileLocation::DdsGrp(grp) => grp.texture_formats(),
             }
         }
@@ -189,7 +189,7 @@ impl<'a> File<'a> {
 
     pub fn layer_names(&self) -> Cow<'a, [String]> {
         match self.location {
-            FileLocation::MainSd(_sprite, mainsd) => mainsd.layer_names().into(),
+            FileLocation::Multiple(_sprite, mainsd) => mainsd.layer_names().into(),
             FileLocation::Separate(file) => file.layer_names().into(),
             FileLocation::DdsGrp(grp) => {
                 (0..grp.frames.len()).map(|i| format!("#{}", i)).collect::<Vec<_>>().into()
@@ -199,7 +199,7 @@ impl<'a> File<'a> {
 
     pub fn layer_count(&self) -> usize {
         match self.location {
-            FileLocation::MainSd(_sprite, mainsd) => mainsd.layer_names().len(),
+            FileLocation::Multiple(_sprite, mainsd) => mainsd.layer_names().len(),
             FileLocation::Separate(file) => file.layer_names().len(),
             FileLocation::DdsGrp(grp) => grp.frames.len(),
         }
@@ -216,41 +216,41 @@ impl<'a> File<'a> {
 impl<'a> FileLocation<'a> {
     pub fn values_or_ref(&self) -> Option<anim::ValuesOrRef> {
         Some(match *self {
-            FileLocation::MainSd(sprite, mainsd) => mainsd.values_or_ref(sprite),
-            FileLocation::Separate(file) => anim::ValuesOrRef::Values(file.sprite_values()),
+            FileLocation::Multiple(sprite, mainsd) => mainsd.values_or_ref(sprite),
+            FileLocation::Separate(file) => anim::ValuesOrRef::Values(file.sprite_values(0)?),
             FileLocation::DdsGrp(_) => return None,
         })
     }
 
     pub fn frames(&self) -> Option<&'a [anim::Frame]> {
         Some(match *self {
-            FileLocation::MainSd(sprite, mainsd) => mainsd.frames(sprite)?,
-            FileLocation::Separate(file) => file.frames(),
+            FileLocation::Multiple(sprite, mainsd) => mainsd.frames(sprite)?,
+            FileLocation::Separate(file) => file.frames(0)?,
             FileLocation::DdsGrp(_) => return None,
         })
     }
 
     pub fn texture_size(&self, layer: usize) -> Option<anim::Texture> {
         Some(match *self {
-            FileLocation::MainSd(sprite, mainsd) => {
+            FileLocation::Multiple(sprite, mainsd) => {
                 mainsd.texture_sizes(sprite)?.get(layer)?.clone()?
             },
-            FileLocation::Separate(file) => file.texture_sizes().get(layer)?.clone()?,
+            FileLocation::Separate(file) => file.texture_sizes(0)?.get(layer)?.clone()?,
             FileLocation::DdsGrp(grp) => grp.texture_size(layer)?,
         })
     }
 
     pub fn sprite_values(&self) -> Option<SpriteValues> {
         Some(match *self {
-            FileLocation::MainSd(sprite, mainsd) => mainsd.sprite_values(sprite)?,
-            FileLocation::Separate(file) => file.sprite_values(),
+            FileLocation::Multiple(sprite, mainsd) => mainsd.sprite_values(sprite)?,
+            FileLocation::Separate(file) => file.sprite_values(0)?,
             FileLocation::DdsGrp(_) => return None,
         })
     }
 
     pub fn image_ref(&self) -> Option<u32> {
         match *self {
-            FileLocation::MainSd(sprite, ref mainsd) => {
+            FileLocation::Multiple(sprite, ref mainsd) => {
                 mainsd.sprites().get(sprite).and_then(|x| match *x {
                     anim::SpriteType::Ref(x) => Some(x),
                     anim::SpriteType::Data(_) => None,
@@ -262,9 +262,9 @@ impl<'a> FileLocation<'a> {
     }
 }
 
-fn load_mainsd(path: &Path) -> Result<anim::MainSd, Error> {
+fn load_mainsd(path: &Path) -> Result<anim::Anim, Error> {
     let file = fs::File::open(path)?;
-    anim::MainSd::read(file)
+    anim::Anim::read(file)
 }
 
 impl Files {
@@ -318,7 +318,7 @@ impl Files {
                 edits: HashMap::new(),
             })
         } else {
-            match is_mainsd(one_filename) {
+            match one_filename.extension().map(|x| x == "anim").unwrap_or(false) {
                 true => {
                     let mainsd = load_mainsd(one_filename)?;
                     Ok(Files {
@@ -336,7 +336,7 @@ impl Files {
                 }
                 false => {
                     Ok(Files {
-                        sprites: vec![SpriteFiles::SingleFile(one_filename.into())],
+                        sprites: vec![SpriteFiles::DdsGrp(one_filename.into())],
                         mainsd_anim: None,
                         root_path: Some(one_filename.into()),
                         open_files: OpenFiles::new(),
@@ -417,7 +417,7 @@ impl Files {
                             texture_sizes = mainsd.texture_sizes(img_id as usize);
                         }
                     }
-                    location = FileLocation::MainSd(sprite, mainsd);
+                    location = FileLocation::Multiple(sprite, mainsd);
                 }
                 Edit::Grp(ref grp_edits) => {
                     let loc = file_location(
@@ -494,91 +494,8 @@ impl Files {
         &self.sprites[..]
     }
 
-    pub fn mainsd(&self) -> Option<&anim::MainSd> {
+    pub fn mainsd(&self) -> Option<&anim::Anim> {
         self.mainsd_anim.as_ref().map(|x| &x.1)
-    }
-
-    pub fn write_mainsd<W: Write + Seek>(&mut self, out: W) -> Result<(), Error> {
-        let mainsd = match self.mainsd_anim {
-            Some(ref mut s) => &mut s.1,
-            None => return Err(format_err!("No mainsd loaded")),
-        };
-        let sprite_count = mainsd.sprites().len() as u16;
-        let layer_names: Vec<_> = mainsd.layer_names().into();
-        let data_changes = self.edits.iter().filter(|x| (x.0).1 == SpriteType::Sd).map(|(k, v)| {
-            let i = k.0;
-            let edit = match *v {
-                Edit::Ref(i) => anim::ValuesOrRef::Ref(i),
-                Edit::Values(ref vals) => anim::ValuesOrRef::Values(vals.values),
-                Edit::Grp(_) => unimplemented!("Semi-dead debug code"),
-            };
-            (i, edit)
-        }).collect::<Vec<_>>();
-        let tex_changes = self.edits.iter()
-            .filter(|x| (x.0).1 == SpriteType::Sd)
-            .filter_map(|(k, v)| {
-                let i = k.0;
-                match v {
-                    Edit::Ref(_) => None,
-                    Edit::Values(vals) => match vals.tex_changes {
-                        Some(ref s) => Some((i, s)),
-                        None => None,
-                    }
-                    Edit::Grp(_) => unimplemented!("Semi-dead debug code"),
-                }
-            }).collect::<Vec<_>>();
-        mainsd.write_patched(
-            out,
-            sprite_count,
-            &layer_names,
-            &data_changes,
-            &tex_changes,
-        )
-    }
-
-    pub fn write_separate<W: Write + Seek>(
-        &mut self,
-        out: W,
-        sprite: usize,
-        ty: SpriteType,
-    ) -> Result<(), Error> {
-        let values;
-        let layer_names: Vec<_>;
-        {
-            let file = match self.file(sprite, ty)? {
-                Some(s) => s,
-                None => return Err(format_err!("No file")),
-            };
-            values = match file.sprite_values() {
-                Some(s) => s,
-                None => return Err(format_err!("No sprite values")),
-            };
-            layer_names = file.layer_names().into();
-        }
-        let anim = self.open_files.anim.iter_mut()
-            .find(|x| x.1 == sprite && x.2 == ty)
-            .map(|x| &mut x.0);
-        let anim = match anim {
-            Some(a) => a,
-            _ => return Err(format_err!("No anim file")),
-        };
-        let tex_changes = self.edits.get(&(sprite, ty)).and_then(|x| match x {
-            Edit::Ref(_) => None,
-            Edit::Values(x) => x.tex_changes.as_ref(),
-            Edit::Grp(_) => unimplemented!("Semi-dead debug code"),
-        });
-        let scale = match ty {
-            SpriteType::Sd => 1,
-            SpriteType::Hd2 => 2,
-            SpriteType::Hd => 4,
-        };
-        anim.write_patched(
-            out,
-            scale,
-            &layer_names,
-            &values,
-            tex_changes,
-        )
     }
 
     pub fn set_ref_enabled(&mut self, sprite: usize, ty: SpriteType, enabled: bool) {
@@ -772,12 +689,6 @@ impl Files {
                         format!("Unable to create {}", out_path.to_string_lossy())
                     })?;
                     temp_files.push((out_path, path.into()));
-                    let scale = match ty {
-                        SpriteType::Sd => 1,
-                        SpriteType::Hd2 => 2,
-                        SpriteType::Hd => 4,
-                    };
-
                     if is_anim {
                         let anim = anim::Anim::read(file)?;
 
@@ -794,15 +705,28 @@ impl Files {
                             Edit::Values(ref v) => v,
                             Edit::Grp(..) => unreachable!(),
                         };
-                        let tex_edits = edit.tex_changes.as_ref();
+                        let buf;
+                        let tex_edits = match edit.tex_changes {
+                            Some(ref s) => {
+                                buf = [(0, s)];
+                                &buf[..]
+                            },
+                            None => &[],
+                        };
                         anim.write_patched(
                             &mut out,
-                            scale,
+                            anim.scale(),
+                            1,
                             &layer_names,
-                            &edit.values,
+                            &[(0, anim::ValuesOrRef::Values(edit.values))],
                             tex_edits
                         )?;
                     } else {
+                        let scale = match ty {
+                            SpriteType::Sd => 1,
+                            SpriteType::Hd2 => 1,
+                            SpriteType::Hd => 4,
+                        };
                         if let Edit::Grp(ref edits) = *edit {
                             ddsgrp::DdsGrp::write(&mut out, scale, &edits)?;
                         }
@@ -832,6 +756,7 @@ impl Files {
                     })?;
                     sd.write_patched(
                         &mut out,
+                        sd.scale(),
                         sprite_count,
                         &layer_names,
                         &sd_edits,
@@ -875,7 +800,7 @@ fn temp_file_path(orig_file: &Path) -> PathBuf {
 }
 
 fn file_location<'a>(
-    mainsd_anim: Option<&'a anim::MainSd>,
+    mainsd_anim: Option<&'a anim::Anim>,
     open_files: &'a mut OpenFiles,
     sprites: &[SpriteFiles],
     sprite: usize,
@@ -885,24 +810,18 @@ fn file_location<'a>(
         Some(&SpriteFiles::AnimSet(_)) | Some(&SpriteFiles::MainSdOnly { .. }) => {
             match ty {
                 SpriteType::Sd => {
-                    Ok(mainsd_anim.map(|x| FileLocation::MainSd(sprite, x)))
+                    Ok(mainsd_anim.map(|x| FileLocation::Multiple(sprite, x)))
                 }
                 SpriteType::Hd | SpriteType::Hd2 => {
                     file_location_hd(open_files, sprites, sprite, ty)
                 }
             }
         }
-        Some(&SpriteFiles::SingleFile(ref f)) => {
+        Some(&SpriteFiles::DdsGrp(ref f)) => {
             let file = fs::File::open(f)?;
-            if f.extension().map(|x| x == "anim").unwrap_or(false) {
-                let anim = anim::Anim::read(file)?;
-                open_files.anim.push((anim, sprite, ty));
-                Ok(Some(FileLocation::Separate(&open_files.anim.last().unwrap().0)))
-            } else {
-                let grp = ddsgrp::DdsGrp::read(file)?;
-                open_files.grp.push((grp, sprite, ty));
-                Ok(Some(FileLocation::DdsGrp(&open_files.grp.last().unwrap().0)))
-            }
+            let grp = ddsgrp::DdsGrp::read(file)?;
+            open_files.grp.push((grp, sprite, ty));
+            Ok(Some(FileLocation::DdsGrp(&open_files.grp.last().unwrap().0)))
         }
         None => Ok(None),
     }
@@ -931,7 +850,7 @@ fn separate_file_path(sprites: &[SpriteFiles], sprite: usize, ty: SpriteType) ->
                 false => Some(&files.hd_filename),
                 true => Some(&files.hd2_filename),
             },
-            SpriteFiles::SingleFile(ref f) => Some(f),
+            SpriteFiles::DdsGrp(ref f) => Some(f),
             _ => None,
         })?;
 
@@ -960,13 +879,6 @@ fn file_location_hd<'a>(
     let anim = anim::Anim::read(file)?;
     open_files.anim.push((anim, sprite, ty));
     Ok(Some(FileLocation::Separate(&open_files.anim.last_mut().unwrap().0)))
-}
-
-fn is_mainsd(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|f| f.to_str())
-        .map(|f| f.eq_ignore_ascii_case("mainsd.anim"))
-        .unwrap_or(false)
 }
 
 fn file_root_from_file(file: &Path) -> Option<&Path> {

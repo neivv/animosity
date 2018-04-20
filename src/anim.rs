@@ -9,13 +9,9 @@ use failure::{Error, ResultExt};
 
 pub struct Anim {
     layer_names: Vec<String>,
-    sprite: SpriteData,
-    read: Mutex<Box<ReadSeek>>,
-}
-
-pub struct MainSd {
-    layer_names: Vec<String>,
     sprites: Vec<SpriteType>,
+    scale: u8,
+    unknown: u16,
     read: Mutex<Box<ReadSeek>>,
 }
 
@@ -88,164 +84,17 @@ impl Anim {
         if magic != ANIM_MAGIC {
             return Err(format_err!("Incorrect magic {:08x}", magic));
         }
-        let ty = r.read_u32::<LE>()?;
-        if ty != 0x0202 && ty != 0x0204 {
-            return Err(format_err!("Incorrect type {:x}", ty));
+        let scale = r.read_u8()?;
+        let ty = r.read_u8()?;
+        let unknown = r.read_u16::<LE>()?;
+        if ty != 0x1 && ty != 0x2 {
+            return Err(format_err!("Unknown type {:x}", ty));
         }
         let layers = r.read_u16::<LE>()?;
         let entries = r.read_u16::<LE>()?;
-        if entries != 1 {
-            return Err(format_err!("Not a single-entry file ({} entries)", entries));
+        if ty != 1 && entries != 1 {
+            return Err(format_err!("Type {:x} with {} entries", ty, entries));
         }
-        let mut layer_names = Vec::with_capacity(layers as usize);
-        for i in 0..layers {
-            if i < 10 {
-                let mut buf = [0u8; 0x20];
-                r.read_exact(&mut buf)?;
-                let end = buf.iter().position(|x| *x == 0).unwrap_or(buf.len());
-                layer_names.push(String::from_utf8_lossy(&buf[..end]).into_owned());
-            } else {
-                layer_names.push(format!("Layer {}", i));
-            }
-        }
-        r.seek(SeekFrom::Start(0x14c))?;
-
-        let frame_count = r.read_u16::<LE>()?;
-        if frame_count == 0 {
-            return Err(format_err!("No frames for a single-entry file"));
-        }
-        let unk2 = r.read_u16::<LE>()?;
-        let width = r.read_u16::<LE>()?;
-        let height = r.read_u16::<LE>()?;
-        let frame_arr_offset = r.read_u32::<LE>()?;
-        let textures = read_textures(&mut r, layers as u32)?;
-        r.seek(SeekFrom::Start(frame_arr_offset as u64))?;
-        let frames = read_frames(&mut r, frame_count)?;
-        let sprite = SpriteData {
-            frames,
-            textures,
-            values: SpriteValues {
-                unk2,
-                width,
-                height,
-            },
-        };
-
-        Ok(Anim {
-            layer_names,
-            sprite,
-            read: Mutex::new(Box::new(r)),
-        })
-    }
-
-    /// Writes a patched anim to `out`. `textures` contains the changed textures and their
-    /// layer id, other textures are read from the original read object.
-    ///
-    /// Since the read object is kept open (and used) here, `out` cannot be the same file as
-    /// what was used to read this anim.
-    pub fn write_patched<W: Write + Seek>(
-        &self,
-        mut out: W,
-        scale: u8,
-        layer_names: &[String],
-        data_changes: &SpriteValues,
-        textures: Option<&TexChanges>,
-    ) -> Result<(), Error> {
-        out.write_u32::<LE>(ANIM_MAGIC)?;
-        out.write_u32::<LE>(scale as u32 | 0x200)?;
-        let texture_count = match textures {
-            Some(s) => s.textures.len() as u16,
-            None => self.sprite.textures.len() as u16,
-        };
-        out.write_u16::<LE>(texture_count)?;
-        out.write_u16::<LE>(1)?;
-        if layer_names.len() > 10 {
-            return Err(format_err!("Cannot have more than 10 layers, had {}", layer_names.len()));
-        }
-        for name in layer_names.iter().map(|x| &**x).chain(iter::repeat("")).take(10) {
-            let mut buf = [0u8; 0x20];
-            (&mut buf[..]).write_all(name.as_bytes())?;
-            out.write_all(&buf)?;
-        }
-        let frames = match textures {
-            Some(changes) => &changes.frames,
-            None => &self.sprite.frames,
-        };
-        if frames.len() == 0 {
-            return Err(format_err!("Image has no frames"));
-        }
-        out.write_u16::<LE>(frames.len() as u16)?;
-        out.write_u16::<LE>(data_changes.unk2)?;
-        out.write_u16::<LE>(data_changes.width)?;
-        out.write_u16::<LE>(data_changes.height)?;
-        let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
-        out.write_u32::<LE>(!0)?;
-        if let Some(changes) = textures {
-            write_textures_patched(&mut out, changes, layer_names.len())?;
-        } else {
-            let mut read = self.read.lock().unwrap();
-            write_textures_unchanged(&mut out, &mut *read, &self.sprite.textures)?;
-        }
-        let frame_arr_offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
-            .map_err(|_| format_err!("Output file too big"))?;
-        write_frames(&mut out, frames)?;
-        out.seek(SeekFrom::Start(frame_arr_offset_pos))?;
-        out.write_u32::<LE>(frame_arr_offset)?;
-        Ok(())
-    }
-
-    pub fn frames(&self) -> &[Frame] {
-        &self.sprite.frames
-    }
-
-    pub fn texture_sizes(&self) -> &[Option<Texture>] {
-        &self.sprite.textures
-    }
-
-    pub fn layer_names(&self) -> &[String] {
-        &self.layer_names
-    }
-
-    pub fn sprite_values(&self) -> SpriteValues {
-        self.sprite.values
-    }
-
-    pub fn texture(&self, layer: usize) -> Result<RgbaTexture, Error> {
-        let texture = self.sprite.textures.get(layer).and_then(|x| x.as_ref())
-            .ok_or_else(|| format_err!("No layer {:x}", layer))?
-            .clone();
-        let mut read = self.read.lock().unwrap();
-        read.seek(SeekFrom::Start(texture.offset as u64))?;
-        read_texture(&mut *read, &texture)
-    }
-
-    pub fn texture_formats(&self) -> Vec<Result<Option<TextureFormat>, Error>> {
-        let mut read = self.read.lock().unwrap();
-        let mut read = &mut *read;
-        self.sprite.textures.iter().map(|x| {
-            match *x {
-                Some(ref texture) => {
-                    read.seek(SeekFrom::Start(texture.offset as u64))?;
-                    texture_format(&mut read).map(Some)
-                }
-                None => Ok(None),
-            }
-        }).collect()
-    }
-}
-
-impl MainSd {
-    pub fn read<R: Read + Seek + Send + 'static>(mut r: R) -> Result<MainSd, Error> {
-        let magic = r.read_u32::<LE>()?;
-        if magic != ANIM_MAGIC {
-            return Err(format_err!("Incorrect magic {:08x}", magic));
-        }
-        let ty = r.read_u32::<LE>()?;
-        if ty != 0x0101 {
-            return Err(format_err!("Incorrect type {:x}", ty));
-        }
-        let layers = r.read_u16::<LE>()?;
-        let entries = r.read_u16::<LE>()?;
         let mut layer_names = Vec::with_capacity(layers as usize);
         for i in 0..layers {
             if i < 10 {
@@ -259,7 +108,11 @@ impl MainSd {
         }
         r.seek(SeekFrom::Start(0x14c))?;
         let mut sprite_offsets = vec![0; entries as usize];
-        r.read_u32_into::<LE>(&mut sprite_offsets)?;
+        if ty == 1 {
+            r.read_u32_into::<LE>(&mut sprite_offsets)?;
+        } else {
+            sprite_offsets[0] = r.seek(SeekFrom::Current(0))? as u32;
+        }
         let mut sprites = Vec::with_capacity(entries as usize);
         for (i, offset) in sprite_offsets.into_iter().enumerate() {
             r.seek(SeekFrom::Start(offset as u64))?;
@@ -292,11 +145,17 @@ impl MainSd {
                 }));
             }
         }
-        Ok(MainSd {
+        Ok(Anim {
             layer_names,
             sprites,
+            scale,
+            unknown,
             read: Mutex::new(Box::new(r)),
         })
+    }
+
+    pub fn scale(&self) -> u8 {
+        self.scale
     }
 
     /// Writes a patched anim to `out`. `textures` contains the changed textures and their
@@ -307,13 +166,20 @@ impl MainSd {
     pub fn write_patched<W: Write + Seek>(
         &self,
         mut out: W,
+        scale: u8,
         sprite_count: u16,
         layer_names: &[String],
         data_changes: &[(usize, ValuesOrRef)],
         textures: &[(usize, &TexChanges)],
     ) -> Result<(), Error> {
         out.write_u32::<LE>(ANIM_MAGIC)?;
-        out.write_u32::<LE>(0x0101)?;
+        out.write_u8(scale)?;
+        let ty = match sprite_count == 1 {
+            true => 2,
+            false => 1,
+        };
+        out.write_u8(ty)?;
+        out.write_u16::<LE>(self.unknown)?;
         out.write_u16::<LE>(layer_names.len() as u16)?;
         out.write_u16::<LE>(sprite_count)?;
         if layer_names.len() > 10 {
@@ -326,8 +192,10 @@ impl MainSd {
         }
         let sprite_offset_pos = out.seek(SeekFrom::Current(0))?;
         let mut sprite_offsets = vec![!0u32; sprite_count as usize];
-        for &x in &sprite_offsets {
-            out.write_u32::<LE>(x)?;
+        if ty == 1 {
+            for &x in &sprite_offsets {
+                out.write_u32::<LE>(x)?;
+            }
         }
         let mut read = self.read.lock().unwrap();
         for i in 0..sprite_count {
@@ -395,9 +263,11 @@ impl MainSd {
                 }
             }
         }
-        out.seek(SeekFrom::Start(sprite_offset_pos))?;
-        for &x in &sprite_offsets {
-            out.write_u32::<LE>(x)?;
+        if ty == 1 {
+            out.seek(SeekFrom::Start(sprite_offset_pos))?;
+            for &x in &sprite_offsets {
+                out.write_u32::<LE>(x)?;
+            }
         }
         Ok(())
     }

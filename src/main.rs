@@ -165,7 +165,7 @@ impl Ui {
         for sprite in files.sprites() {
             let name: Cow<str> = match *sprite {
                 SpriteFiles::AnimSet(ref s) => (&*s.name).into(),
-                SpriteFiles::SingleFile(_) => "(File)".into(),
+                SpriteFiles::DdsGrp(_) => "(File)".into(),
                 SpriteFiles::MainSdOnly { ref name, .. } => (&**name).into(),
             };
             self.list.list.push(&name);
@@ -1783,7 +1783,7 @@ impl SpriteInfo {
                 }
                 self.file_list.set_text(&buf);
             }
-            SpriteFiles::SingleFile(_) => {
+            SpriteFiles::DdsGrp(_) => {
                 self.set_enable_animset_actions(false);
             }
             SpriteFiles::MainSdOnly { .. } => {
@@ -1977,15 +1977,6 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
     });
     if cfg!(debug_assertions) {
         action(app, "debug_write", true, move |_, _| {
-            let files = STATE.with(|x| {
-                let state = x.borrow();
-                state.files.clone()
-            });
-            let mut files = files.borrow_mut();
-            let out = std::fs::File::create("out/mainsd.anim").unwrap();
-            files.write_mainsd(out).unwrap();
-            let out = std::fs::File::create("out/main_028.anim").unwrap();
-            files.write_separate(out, 28, SpriteType::Hd).unwrap();
             println!("Write test finished");
         });
         action(app, "debug_dump_frames", true, move |_, _| {
