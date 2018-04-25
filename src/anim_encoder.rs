@@ -7,13 +7,6 @@ use byteorder::{LE, WriteBytesExt};
 use anim;
 use ddsfile::{Dds, D3DFormat};
 
-pub struct AnimEncoder {
-    layer_formats: Vec<Option<anim::TextureFormat>>,
-    // One hashmap for each layer, equivalent frame data
-    frames: Vec<HashMap<Rc<Frame>, Vec<(usize, (i32, i32))>>>,
-    frame_lookup: Vec<Vec<Option<Rc<Frame>>>>,
-}
-
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct Frame {
     width: u32,
@@ -29,22 +22,108 @@ pub struct FrameCoords {
     pub height: u32,
 }
 
-impl AnimEncoder {
-    pub fn new() -> AnimEncoder {
-        AnimEncoder {
-            layer_formats: Vec::new(),
+/// Frames for a single layer
+#[derive(Clone, Eq, PartialEq, Hash)]
+struct LayerFrames {
+    frames: Vec<(Rc<Frame>, (i32, i32))>,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct FrameOffset {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+struct TexCoords {
+    x: u32,
+    y: u32,
+}
+
+pub struct Layout {
+    // One hashmap for each layer, equivalent frame data
+    frames: Vec<HashMap<Rc<Frame>, Vec<(usize, (i32, i32))>>>,
+    frame_lookup: Vec<Vec<Option<Rc<Frame>>>>,
+}
+
+pub struct LayoutResult {
+    frames: Vec<(Vec<(usize, FrameOffset)>, LayerFrames, TexCoords)>,
+    texture_width: u32,
+    texture_height: u32,
+    frame_count: usize,
+}
+
+impl LayoutResult {
+    pub fn encode(
+        &self,
+        first_layer: usize,
+        layers: &[Option<anim::TextureFormat>],
+        scale: u32,
+    ) -> anim::TexChanges {
+        let tex_width = self.texture_width / scale;
+        let tex_height = self.texture_height / scale;
+        let tex_width = ((tex_width - 1) | 3) + 1;
+        let tex_height = ((tex_height - 1) | 3) + 1;
+        let textures = layers.iter().enumerate().map(|(layer, x)| {
+            x.map(|format| {
+                let layer = first_layer + layer;
+                let bytes = match format {
+                    anim::TextureFormat::Dxt1 => {
+                        encode_dxt1(&self.frames, layer, tex_width, tex_height, scale)
+                    }
+                    anim::TextureFormat::Dxt5 => {
+                        encode_dxt5(&self.frames, layer, tex_width, tex_height, scale)
+                    }
+                    anim::TextureFormat::Monochrome => {
+                        encode_monochrome(&self.frames, layer, tex_width, tex_height, scale)
+                    }
+                };
+                (anim::Texture {
+                    offset: !0,
+                    size: bytes.len() as u32,
+                    width: tex_width as u16,
+                    height: tex_height as u16,
+                }, bytes)
+            })
+        }).collect::<Vec<_>>();
+        let mut anim_frames = (0..self.frame_count).map(|_| anim::Frame {
+            tex_x: 0,
+            tex_y: 0,
+            x_off: 0,
+            y_off: 0,
+            width: 0,
+            height: 0,
+            unknown: 0,
+        }).collect::<Vec<_>>();
+        for (ref f, ref layer_f, ref tex_coords) in &self.frames {
+            for (frame_id, frame_off) in f {
+                anim_frames[*frame_id] = anim::Frame {
+                    tex_x: tex_coords.x as u16,
+                    tex_y: tex_coords.y as u16,
+                    x_off: frame_off.x as i16,
+                    y_off: frame_off.y as i16,
+                    width: layer_f.width as u16,
+                    height: layer_f.height as u16,
+                    unknown: 0,
+                };
+            }
+        }
+        anim::TexChanges {
+            frames: anim_frames,
+            textures,
+        }
+    }
+}
+
+
+impl Layout {
+    pub fn new() -> Layout {
+        Layout {
             frames: Vec::new(),
             frame_lookup: Vec::new(),
         }
-    }
-
-    pub fn layer_format(&mut self, layer: usize, format: anim::TextureFormat) {
-        while self.layer_formats.len() < layer + 1 {
-            self.layer_formats.push(None);
-            self.frames.push(HashMap::new());
-            self.frame_lookup.push(Vec::new());
-        }
-        self.layer_formats[layer] = Some(format);
     }
 
     /// Data must be RGBA encoded
@@ -55,10 +134,14 @@ impl AnimEncoder {
         data: Vec<u8>,
         coords: FrameCoords,
     ) {
-        assert_eq!(4 * (coords.width * coords.height) as usize, data.len());
         if data.is_empty() {
             return;
         }
+        while self.frames.len() <= layer {
+            self.frames.push(HashMap::new());
+            self.frame_lookup.push(Vec::new());
+        }
+
         let entry = self.frames[layer].entry(Rc::new(Frame {
             data,
             width: coords.width,
@@ -73,7 +156,7 @@ impl AnimEncoder {
         lookup[frame] = Some(frame_rc);
     }
 
-    pub fn finish(mut self) -> anim::TexChanges {
+    pub fn layout(mut self) -> LayoutResult {
         let mut final_map: HashMap<LayerFrames, Vec<(usize, FrameOffset)>> = HashMap::new();
         let frame_count = self.frame_lookup.iter().map(|x| x.len()).max().unwrap_or(0);
         let dummy_frame = Rc::new(Frame {
@@ -138,82 +221,17 @@ impl AnimEncoder {
         let mut layout_order = final_map.into_iter().map(|(k, v)| (v, k)).collect::<Vec<_>>();
         // Place tallest frames first
         layout_order.sort_by_key(|x| x.1.height);
-        let (frames, tex_width, tex_height) = layout_frames(layout_order);
-        let textures = self.layer_formats.iter().enumerate().map(|(layer, x)| {
-            x.map(|format| {
-                let tex_width = ((tex_width - 1) | 3) + 1;
-                let tex_height = ((tex_height - 1) | 3) + 1;
-                let bytes = match format {
-                    anim::TextureFormat::Dxt1 => {
-                        encode_dxt1(&frames, layer, tex_width, tex_height)
-                    }
-                    anim::TextureFormat::Dxt5 => {
-                        encode_dxt5(&frames, layer, tex_width, tex_height)
-                    }
-                    anim::TextureFormat::Monochrome => {
-                        encode_monochrome(&frames, layer, tex_width, tex_height)
-                    }
-                };
-                (anim::Texture {
-                    offset: !0,
-                    size: bytes.len() as u32,
-                    width: tex_width as u16,
-                    height: tex_height as u16,
-                }, bytes)
-            })
-        }).collect::<Vec<_>>();
-        let mut anim_frames = (0..frame_count).map(|_| anim::Frame {
-            tex_x: 0,
-            tex_y: 0,
-            x_off: 0,
-            y_off: 0,
-            width: 0,
-            height: 0,
-            unknown: 0,
-        }).collect::<Vec<_>>();
-        for (ref f, ref layer_f, ref tex_coords) in &frames {
-            for (frame_id, frame_off) in f {
-                anim_frames[*frame_id] = anim::Frame {
-                    tex_x: tex_coords.x as u16,
-                    tex_y: tex_coords.y as u16,
-                    x_off: frame_off.x as i16,
-                    y_off: frame_off.y as i16,
-                    width: layer_f.width as u16,
-                    height: layer_f.height as u16,
-                    unknown: 0,
-                };
-            }
-        }
-        anim::TexChanges {
-            frames: anim_frames,
-            textures,
-        }
+
+        layout_frames(layout_order, 32, frame_count)
     }
 }
 
-/// Frames for a single layer
-#[derive(Clone, Eq, PartialEq, Hash)]
-struct LayerFrames {
-    frames: Vec<(Rc<Frame>, (i32, i32))>,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-struct FrameOffset {
-    x: i32,
-    y: i32,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-struct TexCoords {
-    x: u32,
-    y: u32,
-}
 
 fn layout_frames(
     mut frames: Vec<(Vec<(usize, FrameOffset)>, LayerFrames)>,
-) -> (Vec<(Vec<(usize, FrameOffset)>, LayerFrames, TexCoords)>, u32, u32) {
+    alignment: u32,
+    frame_count: usize,
+) -> LayoutResult {
     fn fits(
         placed: &[(Vec<(usize, FrameOffset)>, LayerFrames, TexCoords)],
         pos: &TexCoords,
@@ -233,18 +251,19 @@ fn layout_frames(
     let mut out_width = 0;
     let mut out_height = 0;
     while let Some((uses, frame)) = frames.pop() {
-        let round_to_divisible_by_4 = |x: u32| {
-            ((x - 1) | 3) + 1
+        let mask = alignment - 1;
+        let round_to_alignment = |x: u32| {
+            ((x - 1) | mask) + 1
         };
-        let width = round_to_divisible_by_4(frame.width);
-        let height = round_to_divisible_by_4(frame.height);
+        let width = round_to_alignment(frame.width);
+        let height = round_to_alignment(frame.height);
         // Find a place which ideally adds as little as possible to width/height,
         // or allow increasing width as long as it doesn't go past next power of two.
         let mut best_on_right: Option<(TexCoords, u32, u32)> = None;
         let mut best_on_bottom: Option<(TexCoords, u32, u32, u32)> = None;
         for placed in &result {
             let right_pos = TexCoords {
-                x: round_to_divisible_by_4(placed.2.x + placed.1.width),
+                x: round_to_alignment(placed.2.x + placed.1.width),
                 y: placed.2.y,
             };
             let width_add = (right_pos.x + width).saturating_sub(out_width);
@@ -261,7 +280,7 @@ fn layout_frames(
             };
             let bottom_pos = TexCoords {
                 x: placed.2.x,
-                y: round_to_divisible_by_4(placed.2.y + placed.1.height),
+                y: round_to_alignment(placed.2.y + placed.1.height),
             };
             let height_add = (bottom_pos.y + height).saturating_sub(out_height);
             let bottom_width_add = (bottom_pos.x + width).saturating_sub(out_width);
@@ -315,7 +334,12 @@ fn layout_frames(
         out_height = out_height.max(coords.y + height);
         result.push((uses, frame, coords));
     }
-    (result, out_width, out_height)
+    LayoutResult {
+        frames: result,
+        texture_width: out_width,
+        texture_height: out_height,
+        frame_count,
+    }
 }
 
 const BMP_MAGIC: u32 = 0x20504d42;
@@ -324,6 +348,7 @@ fn encode_monochrome(
     layer: usize,
     width: u32,
     height: u32,
+    scale: u32,
 ) -> Vec<u8> {
     let mut out = vec![0; (width * height) as usize + 4];
     (&mut out[..]).write_u32::<LE>(BMP_MAGIC).unwrap();
@@ -332,8 +357,9 @@ fn encode_monochrome(
         if frame.data.is_empty() {
             continue;
         }
-        let mut out_pos =
-            (((place.y + offset.1 as u32) * width) + place.x + offset.0 as u32) as usize + 4;
+        let mut out_pos = (
+            (place.y / scale + offset.1 as u32) * width + (place.x / scale + offset.0 as u32)
+        ) as usize + 4;
         for c in frame.data.chunks(frame.width as usize * 4) {
             let out = &mut out[out_pos..out_pos + frame.width as usize];
             for (out, x) in out.iter_mut().zip(c.chunks(4)) {
@@ -350,6 +376,7 @@ fn encode_dxt5(
     layer: usize,
     width: u32,
     height: u32,
+    scale: u32,
 ) -> Vec<u8> {
     let width = ((width - 1) | 3) + 1;
     let height = ((height - 1) | 3) + 1;
@@ -361,10 +388,13 @@ fn encode_dxt5(
             continue;
         }
 
-        let x_pixel = place.x + offset.0 as u32;
-        let y_pixel = place.y + offset.1 as u32;
-        let last_x = x_pixel + frame.width;
-        let last_y = y_pixel + frame.height;
+        let x_pixel = place.x / scale + offset.0 as u32;
+        let y_pixel = place.y / scale + offset.1 as u32;
+        let frame_width = frame.width / scale;
+        let last_x = x_pixel + frame_width;
+        let last_y = y_pixel + frame.height / scale;
+        assert!(last_x <= width);
+        assert!(last_y <= height);
 
         let mut y = y_pixel;
         while y < last_y {
@@ -378,9 +408,9 @@ fn encode_dxt5(
                 for block_y in (y & 3)..(last_y - y).min(4) {
                     for block_x in (x & 3)..(last_x - x).min(4) {
                         let input_pos =
-                            ((in_y + block_y) * frame.width + in_x + block_x) as usize * 4;
-                        block[(block_y * 4 + block_x) as usize]
-                            .copy_from_slice(&frame.data[input_pos..input_pos + 4]);
+                            ((in_y + block_y) * frame_width + in_x + block_x) as usize * 4;
+                        let input_slice = &frame.data[input_pos..input_pos + 4];
+                        block[(block_y * 4 + block_x) as usize].copy_from_slice(input_slice);
                     }
                 }
                 let has_far_alpha = block.iter().any(|x| x[3] < 16) ||
@@ -415,6 +445,7 @@ fn encode_dxt1(
     layer: usize,
     width: u32,
     height: u32,
+    scale: u32,
 ) -> Vec<u8> {
     let width = ((width - 1) | 3) + 1;
     let height = ((height - 1) | 3) + 1;
@@ -426,10 +457,13 @@ fn encode_dxt1(
             continue;
         }
 
-        let x_pixel = place.x + offset.0 as u32;
-        let y_pixel = place.y + offset.1 as u32;
-        let last_x = x_pixel + frame.width;
-        let last_y = y_pixel + frame.height;
+        let x_pixel = place.x / scale + offset.0 as u32;
+        let y_pixel = place.y / scale + offset.1 as u32;
+        let frame_width = frame.width / scale;
+        let last_x = x_pixel + frame_width;
+        let last_y = y_pixel + frame.height / scale;
+        assert!(last_x <= width);
+        assert!(last_y <= height);
 
         let mut y = y_pixel;
         while y < last_y {
@@ -443,9 +477,9 @@ fn encode_dxt1(
                 for block_y in (y & 3)..(last_y - y).min(4) {
                     for block_x in (x & 3)..(last_x - x).min(4) {
                         let input_pos =
-                            ((in_y + block_y) * frame.width + in_x + block_x) as usize * 4;
-                        block[(block_y * 4 + block_x) as usize]
-                            .copy_from_slice(&frame.data[input_pos..input_pos + 4]);
+                            ((in_y + block_y) * frame_width + in_x + block_x) as usize * 4;
+                        let input_slice = &frame.data[input_pos..input_pos + 4];
+                        block[(block_y * 4 + block_x) as usize].copy_from_slice(input_slice);
                     }
                 }
                 let has_alpha = block.iter().any(|x| x[3] < 128);
@@ -1102,8 +1136,8 @@ pub fn encode(rgba: &[u8], width: u32, height: u32, format: anim::TextureFormat)
         }
     )];
     match format {
-        anim::TextureFormat::Dxt1 => encode_dxt1(&frames, 0, width, height),
-        anim::TextureFormat::Dxt5 => encode_dxt5(&frames, 0, width, height),
-        anim::TextureFormat::Monochrome => encode_monochrome(&frames, 0, width, height),
+        anim::TextureFormat::Dxt1 => encode_dxt1(&frames, 0, width, height, 1),
+        anim::TextureFormat::Dxt5 => encode_dxt5(&frames, 0, width, height, 1),
+        anim::TextureFormat::Monochrome => encode_monochrome(&frames, 0, width, height, 1),
     }
 }

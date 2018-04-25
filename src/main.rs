@@ -102,7 +102,9 @@ fn init_panic_handler() {
 }
 
 fn main() {
-    init_panic_handler();
+    if !cfg!(debug_assertions) {
+        init_panic_handler();
+    }
     let _ = init_log();
     let app = gtk::Application::new("a.b", gio::ApplicationFlags::empty())
         .unwrap_or_else(|e| panic!("Couldn't create app: {}", e));
@@ -954,19 +956,43 @@ impl SpriteInfo {
             Ok(o) => o,
             _ => return,
         };
-        let file = match files.file(tex_id.0, tex_id.1) {
-            Ok(Some(o)) => o,
-            _ => return,
+        let layer_names;
+        let tex_formats;
+        let is_anim;
+        let path;
+        {
+            let file = match files.file(tex_id.0, tex_id.1) {
+                Ok(Some(o)) => o,
+                _ => return,
+            };
+            is_anim = file.is_anim();
+            layer_names = file.layer_names().into_owned();
+            tex_formats = file.texture_formats();
+            path = file.path().to_owned();
+        }
+        let has_hd2 = if is_anim && tex_id.1 != SpriteType::Sd {
+            let other_ty = match tex_id.1 {
+                SpriteType::Hd => SpriteType::Hd2,
+                SpriteType::Hd2 | _ => SpriteType::Hd,
+            };
+            match files.file(tex_id.0, other_ty) {
+                Ok(Some(_)) => true,
+                _ => false,
+            }
+        } else {
+            false
         };
-        let layer_names = file.layer_names();
 
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
 
-        let is_anim = file.is_anim();
         let mut framedef_filename = None;
         let framedef_status = gtk::Label::new(None);
         let framedef;
+        let mut hd2_framedef_filename = None;
+        let mut hd2_framedef = None;
+        let mut hd2_framedef_bx = None;
+        let hd2_framedef_status = gtk::Label::new(None);
         let framedef_bx = if is_anim {
             framedef = Rc::new(
                 select_dir::SelectFile::new(&window, "import_frames", "Text files", "*.json")
@@ -979,7 +1005,24 @@ impl SpriteInfo {
                 true => None,
                 false => Some(x),
             });
-            label_section("Frame info file", &framedef_inner_bx)
+            if has_hd2 {
+                let hd2_framedef_ = Rc::new(select_dir::SelectFile::new(
+                    &window, "import_frames_hd2", "Text files", "*.json"
+                ));
+                let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                bx.pack_start(&hd2_framedef_.widget(), false, false, 0);
+                hd2_framedef_status.set_halign(gtk::Align::Start);
+                bx.pack_start(&hd2_framedef_status, false, false, 5);
+                hd2_framedef_filename = hd2_framedef_.text().and_then(|x| match x.is_empty() {
+                    true => None,
+                    false => Some(x),
+                });
+                hd2_framedef = Some(hd2_framedef_);
+                hd2_framedef_bx = Some(label_section("HD2 Frame info file", &bx));
+                label_section("HD Frame info file", &framedef_inner_bx)
+            } else {
+                label_section("Frame info file", &framedef_inner_bx)
+            }
         } else {
             framedef = Rc::new(
                 select_dir::SelectFile::new(&window, "import_frames_grp", "PNG files", "*.png")
@@ -991,7 +1034,6 @@ impl SpriteInfo {
 
         let mut checkboxes = Vec::with_capacity(layer_names.len());
         let mut grp_format = None;
-        let tex_formats = file.texture_formats();
         let layers_bx = if is_anim {
             let grid = gtk::Grid::new();
             grid.set_column_spacing(5);
@@ -1045,8 +1087,11 @@ impl SpriteInfo {
         let s = this.clone();
         let w = window.clone();
         let frame_info: Rc<RefCell<Option<FrameInfo>>> = Rc::new(RefCell::new(None));
+        let hd2_frame_info: Rc<RefCell<Option<FrameInfo>>> = Rc::new(RefCell::new(None));
         let fi = frame_info.clone();
+        let hd2_fi = hd2_frame_info.clone();
         let fi_entry = framedef.clone();
+        let hd2_fi_entry = hd2_framedef.clone();
         let c = checkboxes.clone();
         ok_button.connect_clicked(move |_| {
             // Used for grps
@@ -1072,6 +1117,15 @@ impl SpriteInfo {
                 }
                 None => return,
             };
+            let hd2_dir = hd2_fi_entry.as_ref().and_then(|x| x.text()).and_then(|s| {
+                let mut buf: PathBuf = s.into();
+                buf.pop();
+                if !buf.is_dir() {
+                    None
+                } else {
+                    Some(buf)
+                }
+            });
             let mut files = s.files.borrow_mut();
             let result = if is_anim {
                 let formats = c.iter().map(|x| {
@@ -1108,10 +1162,21 @@ impl SpriteInfo {
                     Some(ref s) => s,
                     None => return,
                 };
+                let hd2_fi = hd2_fi.borrow();
 
-                let result =
-                    import_frames(&mut files, frame_info, &dir, &formats, tex_id.0, tex_id.1);
-                result.map(|()| frame_info.layers.len() as u32 * frame_info.frame_count)
+                let result = import_frames(
+                    &mut files,
+                    frame_info,
+                    hd2_fi.as_ref(),
+                    &dir,
+                    hd2_dir.as_ref().map(|x| &**x),
+                    &formats,
+                    tex_id.0,
+                    tex_id.1,
+                );
+                let frame_count = if hd2_fi.is_some() { 2 } else { 1 } *
+                    frame_info.layers.len() as u32 * frame_info.frame_count;
+                result.map(|()| frame_count)
             } else {
                 let format = match grp_format {
                     Some(ref s) => match s.get_active() {
@@ -1209,7 +1274,8 @@ impl SpriteInfo {
 
         let ok = ok_button.clone();
         if is_anim {
-            let framedef_set = Rc::new(move |filename: &str| {
+            // The second entry is used for hd2
+            let framedef_set = Rc::new(move |filename: &str, hd2: bool, status: &gtk::Label| {
                 match parse_frame_info(Path::new(filename)) {
                     Ok(o) => {
                         ok.set_sensitive(true);
@@ -1234,8 +1300,12 @@ impl SpriteInfo {
                                 }
                             }
                         }
-                        *frame_info.borrow_mut() = Some(o);
-                        framedef_status.set_text("");
+                        if hd2 {
+                            *hd2_frame_info.borrow_mut() = Some(o);
+                        } else {
+                            *frame_info.borrow_mut() = Some(o);
+                        }
+                        status.set_text("");
                     }
                     Err(e) => {
                         ok.set_sensitive(false);
@@ -1251,23 +1321,39 @@ impl SpriteInfo {
                         }
                         // Remove last newline
                         msg.pop();
-                        *frame_info.borrow_mut() = None;
-                        framedef_status.set_text(&msg);
+                        if hd2 {
+                            *hd2_frame_info.borrow_mut() = None;
+                        } else {
+                            *frame_info.borrow_mut() = None;
+                        }
+                        status.set_text(&msg);
                     }
                 }
             });
             if let Some(filename) = framedef_filename {
-                framedef_set(&filename);
+                framedef_set(&filename, false, &framedef_status);
             }
             let fun = framedef_set.clone();
             framedef.on_change(move |filename| {
-                fun(filename);
+                fun(filename, false, &framedef_status);
             });
+            if let Some(filename) = hd2_framedef_filename {
+                framedef_set(&filename, true, &hd2_framedef_status);
+            }
+            if let Some(ref fdef) = hd2_framedef {
+                let fun = framedef_set.clone();
+                fdef.on_change(move |filename| {
+                    fun(filename, true, &hd2_framedef_status);
+                });
+            }
         }
 
         button_bx.pack_end(&cancel_button, false, false, 0);
         button_bx.pack_end(&ok_button, false, false, 0);
         bx.pack_start(&framedef_bx, false, false, 0);
+        if let Some(hd2) = hd2_framedef_bx {
+            bx.pack_start(&hd2, false, false, 0);
+        }
         bx.pack_start(&layers_bx, false, false, 0);
         bx.pack_start(&button_bx, false, false, 0);
         window.add(&bx);
@@ -1276,7 +1362,7 @@ impl SpriteInfo {
         if is_anim {
             window.set_title(&format!("Import frames for {:?} image {}", tex_id.1, tex_id.0));
         } else {
-            if let Some(filename) = file.path().file_name() {
+            if let Some(filename) = path.file_name() {
                 window.set_title(&format!("Import frames of {}", filename.to_string_lossy()));
             }
         }
@@ -2407,52 +2493,98 @@ fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>
 fn import_frames(
     files: &mut files::Files,
     frame_info: &FrameInfo,
+    hd2_frame_info: Option<&FrameInfo>,
     dir: &Path,
+    hd2_dir: Option<&Path>,
     formats: &[anim::TextureFormat],
     sprite: usize,
     ty: SpriteType,
 ) -> Result<(), Error> {
+    fn add_layers(
+        layout: &mut anim_encoder::Layout,
+        frame_info: &FrameInfo,
+        dir: &Path,
+        first_layer: usize,
+        scale: u32,
+    ) -> Result<(), Error> {
+        for &(i, ref layer_prefix) in &frame_info.layers {
+            let layer = first_layer + i as usize;
+            for f in 0..frame_info.frame_count {
+                let path = dir.join(format!("{}_{:03}.png", layer_prefix, f));
+                let file = File::open(&path)
+                    .with_context(|_| format!("Unable to open {}", path.to_string_lossy()))?;
+                let mut decoder = png::Decoder::new(file);
+                decoder.set(png::Transformations::IDENTITY);
+                let (info, mut reader) = decoder.read_info()
+                    .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
+                let mut buf = vec![0; info.buffer_size()];
+                reader.next_frame(&mut buf)
+                    .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
+                let buf = arbitrary_png_to_rgba(buf, &info)
+                    .with_context(|_| format!("Unsupported PNG {}", path.to_string_lossy()))?;
+                let mut bounded = rgba_bounding_box(&buf, info.width, info.height);
+                bounded.coords.x_offset =
+                    bounded.coords.x_offset.saturating_add(frame_info.offset_x) * scale as i32;
+                bounded.coords.y_offset =
+                    bounded.coords.y_offset.saturating_add(frame_info.offset_y) * scale as i32;
+                bounded.coords.width *= scale;
+                bounded.coords.height *= scale;
+                layout.add_frame(layer, f as usize, bounded.data, bounded.coords);
+            }
+        }
+        Ok(())
+    }
+
     use png::HasParameters;
 
-    let mut encoder = anim_encoder::AnimEncoder::new();
-    for &(i, ref layer_prefix) in &frame_info.layers {
-        let layer = i as usize;
-        let format = formats.get(layer)
-            .ok_or_else(|| format_err!("No layer format for layer {}", layer))?
-            .clone();
-        encoder.layer_format(layer, format);
-        for f in 0..frame_info.frame_count {
-            let path = dir.join(format!("{}_{:03}.png", layer_prefix, f));
-            let file = File::open(&path)
-                .with_context(|_| format!("Unable to open {}", path.to_string_lossy()))?;
-            let mut decoder = png::Decoder::new(file);
-            decoder.set(png::Transformations::IDENTITY);
-            let (info, mut reader) = decoder.read_info()
-                .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
-            let mut buf = vec![0; info.buffer_size()];
-            reader.next_frame(&mut buf)
-                .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
-            let buf = arbitrary_png_to_rgba(buf, &info)
-                .with_context(|_| format!("Unsupported PNG {}", path.to_string_lossy()))?;
-            let mut bounded = rgba_bounding_box(&buf, info.width, info.height);
-            bounded.coords.x_offset = bounded.coords.x_offset.saturating_add(frame_info.offset_x);
-            bounded.coords.y_offset = bounded.coords.y_offset.saturating_add(frame_info.offset_y);
-            encoder.add_frame(layer, f as usize, bounded.data, bounded.coords);
-        }
+    let hd2_frame_info = match (hd2_frame_info, hd2_dir) {
+        (Some(a), Some(b)) => Some((a, b)),
+        _ => None,
+    };
+
+    let layer_count = formats.len();
+    let mut layout = anim_encoder::Layout::new();
+    add_layers(&mut layout, frame_info, dir, 0, 1)?;
+    if let Some((hd2, dir)) = hd2_frame_info {
+        add_layers(&mut layout, hd2, dir, layer_count, 2)?;
     }
-    let mut changes = encoder.finish();
+    let layout_result = layout.layout();
+
+    let formats = formats.iter().enumerate().map(|(i, &f)| {
+        if frame_info.layers.iter().any(|x| x.0 as usize == i) {
+            Some(f)
+        } else {
+            None
+        }
+    }).collect::<Vec<_>>();
+
+    let ty = if hd2_frame_info.is_some() {
+        SpriteType::Hd
+    } else {
+        ty
+    };
 
     let scale_mul = match ty {
         SpriteType::Hd2 => 2u16,
         _ => 1,
     };
+    let alignment = match ty {
+        SpriteType::Hd => 32,
+        SpriteType::Hd2 => 16,
+        SpriteType::Sd => 4,
+    };
+    let align = |val: u16| {
+        ((val - 1) | (alignment - 1)) + 1
+    };
+
+    let mut changes = layout_result.encode(0, &formats, 1);
     for f in &mut changes.frames {
         f.tex_x *= scale_mul;
         f.tex_y *= scale_mul;
         f.x_off *= scale_mul as i16;
         f.y_off *= scale_mul as i16;
-        f.width *= scale_mul;
-        f.height *= scale_mul;
+        f.width = align(f.width) * scale_mul;
+        f.height = align(f.height) * scale_mul;
     }
     for ty in &frame_info.frame_types {
         for f in ty.first_frame..ty.last_frame + 1 {
@@ -2462,6 +2594,22 @@ fn import_frames(
         }
     }
     files.set_tex_changes(sprite, ty, changes);
+    if let Some((hd2, _dir)) = hd2_frame_info {
+        let mut changes = layout_result.encode(layer_count, &formats, 2);
+        for f in &mut changes.frames {
+            // The coordinates are already 2x otherwise
+            f.width = align(f.width);
+            f.height = align(f.height);
+        }
+        for ty in &hd2.frame_types {
+            for f in ty.first_frame..ty.last_frame + 1 {
+                if let Some(f) = changes.frames.get_mut(f as usize) {
+                    f.unknown = ty.frame_type;
+                }
+            }
+        }
+        files.set_tex_changes(sprite, SpriteType::Hd2, changes);
+    }
     Ok(())
 }
 
