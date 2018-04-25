@@ -332,8 +332,10 @@ fn layout_frames(
         };
         out_width = out_width.max(coords.x + width);
         out_height = out_height.max(coords.y + height);
+        debug!("Placing to {}, {} - {}, {}", coords.x, coords.y, width, height);
         result.push((uses, frame, coords));
     }
+    debug!("Result size {} {}", out_width, out_height);
     LayoutResult {
         frames: result,
         texture_width: out_width,
@@ -358,7 +360,7 @@ fn encode_monochrome(
             continue;
         }
         let mut out_pos = (
-            (place.y / scale + offset.1 as u32) * width + (place.x / scale + offset.0 as u32)
+            (place.y + offset.1 as u32) / scale * width + (place.x + offset.0 as u32) / scale
         ) as usize + 4;
         for c in frame.data.chunks(frame.width as usize * 4) {
             let out = &mut out[out_pos..out_pos + frame.width as usize];
@@ -388,13 +390,20 @@ fn encode_dxt5(
             continue;
         }
 
-        let x_pixel = place.x / scale + offset.0 as u32;
-        let y_pixel = place.y / scale + offset.1 as u32;
+        let x_pixel = (place.x + offset.0 as u32) / scale;
+        let y_pixel = (place.y + offset.1 as u32) / scale;
         let frame_width = frame.width / scale;
+        let frame_height = frame.height / scale;
         let last_x = x_pixel + frame_width;
-        let last_y = y_pixel + frame.height / scale;
-        assert!(last_x <= width);
-        assert!(last_y <= height);
+        let last_y = y_pixel + frame_height;
+        assert!(
+            last_x <= width,
+            "Frame width past image bounds: {} {}, {}", x_pixel, frame_width, width
+        );
+        assert!(
+            last_y <= height,
+            "Frame height past image bounds: {} {}, {}", y_pixel, frame_height, height
+        );
 
         let mut y = y_pixel;
         while y < last_y {
@@ -458,13 +467,20 @@ fn encode_dxt1(
             continue;
         }
 
-        let x_pixel = place.x / scale + offset.0 as u32;
-        let y_pixel = place.y / scale + offset.1 as u32;
+        let x_pixel = (place.x + offset.0 as u32) / scale;
+        let y_pixel = (place.y + offset.1 as u32) / scale;
         let frame_width = frame.width / scale;
+        let frame_height = frame.height / scale;
         let last_x = x_pixel + frame_width;
-        let last_y = y_pixel + frame.height / scale;
-        assert!(last_x <= width);
-        assert!(last_y <= height);
+        let last_y = y_pixel + frame_height;
+        assert!(
+            last_x <= width,
+            "Frame width past image bounds: {} {}, {}", x_pixel, frame_width, width
+        );
+        assert!(
+            last_y <= height,
+            "Frame height past image bounds: {} {}, {}", y_pixel, frame_height, height
+        );
 
         let mut y = y_pixel;
         while y < last_y {
