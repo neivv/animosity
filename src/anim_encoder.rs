@@ -407,8 +407,9 @@ fn encode_dxt5(
                 let mut block = [[0; 4]; 16];
                 for block_y in (y & 3)..(last_y - y).min(4) {
                     for block_x in (x & 3)..(last_x - x).min(4) {
-                        let input_pos =
-                            ((in_y + block_y) * frame_width + in_x + block_x) as usize * 4;
+                        let src_y = in_y + block_y - (y & 3);
+                        let src_x = in_x + block_x - (x & 3);
+                        let input_pos = (src_y * frame_width + src_x) as usize * 4;
                         let input_slice = &frame.data[input_pos..input_pos + 4];
                         block[(block_y * 4 + block_x) as usize].copy_from_slice(input_slice);
                     }
@@ -476,8 +477,9 @@ fn encode_dxt1(
                 let mut block = [[0; 4]; 16];
                 for block_y in (y & 3)..(last_y - y).min(4) {
                     for block_x in (x & 3)..(last_x - x).min(4) {
-                        let input_pos =
-                            ((in_y + block_y) * frame_width + in_x + block_x) as usize * 4;
+                        let src_y = in_y + block_y - (y & 3);
+                        let src_x = in_x + block_x - (x & 3);
+                        let input_pos = (src_y * frame_width + src_x) as usize * 4;
                         let input_slice = &frame.data[input_pos..input_pos + 4];
                         block[(block_y * 4 + block_x) as usize].copy_from_slice(input_slice);
                     }
