@@ -87,7 +87,7 @@ impl DdsGrp {
         let mut read = self.read.lock().unwrap();
         self.frames.iter().map(|f| {
             read.seek(SeekFrom::Start(f.offset as u64))?;
-            anim::texture_format(&mut *read).map(Some)
+            anim::texture_format(&mut *read, f.size).map(Some)
         }).collect()
     }
 

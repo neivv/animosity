@@ -323,7 +323,7 @@ impl Anim {
             match *x {
                 Some(ref texture) => {
                     read.seek(SeekFrom::Start(texture.offset as u64))?;
-                    texture_format(&mut read).map(Some)
+                    texture_format(&mut read, texture.size).map(Some)
                 }
                 None => Ok(None),
             }
@@ -359,10 +359,12 @@ fn sprite_values_sd(sprites: &[SpriteType], index: usize) -> Option<SpriteValues
 const DDS_MAGIC: u32 = 0x20534444;
 const BMP_MAGIC: u32 = 0x20504d42;
 
-pub fn texture_format<R: Read + Seek>(mut read: R) -> Result<TextureFormat, Error> {
+pub fn texture_format<R: Read + Seek>(mut read: R, limit: u32) -> Result<TextureFormat, Error> {
     let magic = read.read_u32::<LE>()?;
     if magic == DDS_MAGIC {
+        // TODO dds lib reads everything
         read.seek(SeekFrom::Current(-4))?;
+        let mut read = read.take(limit.into());
         let dds = Dds::read(&mut read)
             .map_err(|e| format_err!("Unable to read DDS: {}", e))?;
         let format = dds.get_d3d_format()
@@ -386,6 +388,7 @@ pub fn read_texture<R: Read + Seek>(
     let magic = read.read_u32::<LE>()?;
     if magic == DDS_MAGIC {
         read.seek(SeekFrom::Current(-4))?;
+        let mut read = read.take(texture.size.into());
         let dds = Dds::read(&mut read)
             .map_err(|e| format_err!("Unable to read DDS: {}", e))?;
         let format = dds.get_d3d_format()
