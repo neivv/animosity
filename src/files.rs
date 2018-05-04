@@ -41,7 +41,8 @@ impl OpenFiles {
 enum Edit {
     Ref(u32),
     Values(EditValues),
-    Grp(Vec<(ddsgrp::Frame, Vec<u8>)>),
+    // Frames, scale
+    Grp(Vec<(ddsgrp::Frame, Vec<u8>)>, u8),
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +98,13 @@ impl<'a> File<'a> {
         match self.location {
             FileLocation::Multiple(..) | FileLocation::Separate(..) => true,
             FileLocation::DdsGrp(..) => false,
+        }
+    }
+
+    pub fn grp(&self) -> Option<&ddsgrp::DdsGrp> {
+        match self.location {
+            FileLocation::Multiple(..) | FileLocation::Separate(..) => None,
+            FileLocation::DdsGrp(s) => Some(s),
         }
     }
 
@@ -160,7 +168,7 @@ impl<'a> File<'a> {
                 match x {
                     Some(ref x) => {
                         let cursor = ::std::io::Cursor::new(&x.1);
-                        anim::texture_format(cursor).map(|x| Some(x))
+                        anim::texture_format(cursor, x.1.len() as u32).map(|x| Some(x))
                     }
                     None => Ok(None),
                 }
@@ -410,7 +418,7 @@ impl Files {
                             textures = None;
                             texture_sizes = mainsd.texture_sizes(img_id as usize);
                         }
-                        None | Some(Edit::Grp(_)) => {
+                        None | Some(Edit::Grp(..)) => {
                             sprite_values = mainsd.sprite_values(img_id as usize);
                             frames = mainsd.frames(img_id as usize);
                             textures = None;
@@ -419,7 +427,7 @@ impl Files {
                     }
                     location = FileLocation::Multiple(sprite, mainsd);
                 }
-                Edit::Grp(ref grp_edits) => {
+                Edit::Grp(ref grp_edits, _scale) => {
                     let loc = file_location(
                         self.mainsd_anim.as_ref().map(|x| &x.1),
                         &mut self.open_files,
@@ -600,12 +608,12 @@ impl Files {
     pub fn set_grp_changes(
         &mut self,
         sprite: usize,
-        ty: SpriteType,
         changes: Vec<(ddsgrp::Frame, Vec<u8>)>,
+        scale: u8,
     ) {
-        let entry = self.edits.entry((sprite, ty));
-        let values = entry.or_insert_with(|| Edit::Grp(Vec::new()));
-        *values = Edit::Grp(changes);
+        let entry = self.edits.entry((sprite, SpriteType::Sd));
+        let values = entry.or_insert_with(|| Edit::Grp(Vec::new(), 0));
+        *values = Edit::Grp(changes, scale);
     }
 
     /// Does nothing if sprite/ty is currently Ref
@@ -722,12 +730,7 @@ impl Files {
                             tex_edits
                         )?;
                     } else {
-                        let scale = match ty {
-                            SpriteType::Sd => 1,
-                            SpriteType::Hd2 => 1,
-                            SpriteType::Hd => 4,
-                        };
-                        if let Edit::Grp(ref edits) = *edit {
+                        if let Edit::Grp(ref edits, scale) = *edit {
                             ddsgrp::DdsGrp::write(&mut out, scale, &edits)?;
                         }
                     }

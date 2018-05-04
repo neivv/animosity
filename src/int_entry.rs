@@ -17,6 +17,7 @@ pub struct IntEntry {
 }
 
 pub enum IntSize {
+    Int8,
     Int16,
 }
 
@@ -51,6 +52,7 @@ pub fn entry() -> (gtk::Entry, gtk::Frame) {
 impl IntEntry {
     pub fn new(size: IntSize) -> Arc<IntEntry> {
         let max_len = match size {
+            IntSize::Int8 => 3,
             IntSize::Int16 => 5,
         };
         let (entry, frame) = entry();
@@ -61,6 +63,14 @@ impl IntEntry {
             frame,
             disable_edit_events: AtomicUsize::new(0),
         })
+    }
+
+    pub fn set_value(&self, val: u32) {
+        self.entry.set_text(&val.to_string());
+    }
+
+    pub fn get_value(&self) -> u32 {
+        self.entry.get_text().and_then(|x| x.parse::<u32>().ok()).unwrap_or(0)
     }
 
     pub fn connect_actions<A: IsA<gio::ActionMap>>(

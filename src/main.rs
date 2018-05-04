@@ -961,6 +961,7 @@ impl SpriteInfo {
         let tex_formats;
         let is_anim;
         let path;
+        let grp_scale;
         {
             let file = match files.file(tex_id.0, tex_id.1) {
                 Ok(Some(o)) => o,
@@ -970,6 +971,7 @@ impl SpriteInfo {
             layer_names = file.layer_names().into_owned();
             tex_formats = file.texture_formats();
             path = file.path().to_owned();
+            grp_scale = file.grp().map(|x| x.scale);
         }
         let has_hd2 = if is_anim && tex_id.1 != SpriteType::Sd {
             let other_ty = match tex_id.1 {
@@ -1075,6 +1077,17 @@ impl SpriteInfo {
             let bx = label_section("Encode format", &format);
             grp_format = Some(format);
             bx
+        };
+        let grp_scale_entry;
+        let grp_scale_bx;
+        if is_anim {
+            grp_scale_entry = None;
+            grp_scale_bx = None;
+        } else {
+            let entry = IntEntry::new(IntSize::Int8);
+            entry.set_value(grp_scale.unwrap_or(0).into());
+            grp_scale_bx = Some(label_section("Scale", &entry.frame));
+            grp_scale_entry = Some(entry);
         };
 
         let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
@@ -1218,13 +1231,14 @@ impl SpriteInfo {
                         return;
                     }
                 };
+                let scale = grp_scale_entry.as_ref().unwrap().get_value() as u8;
                 let result = import_frames_grp(
                     &mut files,
                     &dir,
                     &filename_prefix,
                     format,
                     tex_id.0,
-                    tex_id.1,
+                    scale,
                 );
                 result
             };
@@ -1356,6 +1370,9 @@ impl SpriteInfo {
             bx.pack_start(&hd2, false, false, 0);
         }
         bx.pack_start(&layers_bx, false, false, 0);
+        if let Some(scale) = grp_scale_bx {
+            bx.pack_start(&scale, false, false, 0);
+        }
         bx.pack_start(&button_bx, false, false, 0);
         window.add(&bx);
         window.set_border_width(10);
@@ -2403,7 +2420,7 @@ fn import_frames_grp(
     filename_prefix: &str,
     format: anim::TextureFormat,
     sprite: usize,
-    ty: SpriteType,
+    scale: u8,
 ) -> Result<u32, Error> {
     use png::HasParameters;
 
@@ -2438,7 +2455,7 @@ fn import_frames_grp(
             offset: !0,
         }, data));
     }
-    files.set_grp_changes(sprite, ty, frames);
+    files.set_grp_changes(sprite, frames, scale);
     Ok(frame_count)
 }
 
