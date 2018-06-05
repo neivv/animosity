@@ -395,15 +395,25 @@ pub fn read_texture<R: Read + Seek>(
             .ok_or_else(|| format_err!("Unsupported DDS format"))?;
         let data = dds.get_data(0)
             .map_err(|e| format_err!("Unable to get DDS data: {}", e))?;
-        let data = match format {
-            D3DFormat::DXT1 => {
-                decode_dxt1(&data, texture.width as u32, texture.height as u32)?
-            }
-            D3DFormat::DXT5 => {
-                decode_dxt5(&data, texture.width as u32, texture.height as u32)?
-            }
+
+        let width = ((texture.width as u32 - 1) | 3) + 1;
+        let height = ((texture.height as u32 - 1) | 3) + 1;
+        let mut data = match format {
+            D3DFormat::DXT1 => decode_dxt1(&data, width, height)?,
+            D3DFormat::DXT5 => decode_dxt5(&data, width, height)?,
             _ => return Err(format_err!("Unsupported DDS format {:?}", format)),
         };
+        // The decoding functions only work with multiplies of 4,
+        // but if some textures aren't such, resize them here.
+        if texture.width & 0x3 != 0 {
+            let remove_bytes = 4 - (texture.width & 0x3) as usize;
+            for y in 1..(texture.height as usize) {
+                let start = y * texture.width as usize * 4;
+                let len = ((texture.width as usize) + remove_bytes * y) * 4;
+                data[start..start + len].rotate_left(remove_bytes * y * 4);
+            }
+        }
+        data.resize(texture.width as usize * texture.height as usize * 4, 0);
         Ok(RgbaTexture {
             data,
             width: texture.width as u32,
@@ -432,6 +442,8 @@ pub fn read_texture<R: Read + Seek>(
 
 /// Returns the bytes without alpha multiplied
 fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
+    assert!(width & 3 == 0);
+    assert!(height & 3 == 0);
     let mut read = data;
     let size = (width * height) as usize;
     let mut out = vec![0u8; size * 4];
@@ -521,6 +533,8 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
 }
 
 fn decode_dxt1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
+    assert!(width & 3 == 0);
+    assert!(height & 3 == 0);
     let mut read = data;
     let size = (width * height) as usize;
     let mut out = vec![0u8; size * 4];
