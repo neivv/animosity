@@ -23,14 +23,14 @@ fn config_filename() -> Option<PathBuf> {
     Some(dir.join("select_dir.json"))
 }
 
-fn read_config_entry(id: &str) -> Option<String> {
+pub fn read_config_entry(id: &str) -> Option<String> {
     let mut file = fs::File::open(config_filename()?).ok()?;
     let json: serde_json::Value = serde_json::from_reader(&mut file).ok()?;
     Some(json.as_object()?.get(id)?.as_str()?.into())
 }
 
 // Nice return value
-fn set_config_entry(id: &str, value: &str) -> Option<()> {
+pub fn set_config_entry(id: &str, value: &str) -> Option<()> {
     fn update_json(file: &mut fs::File, id: &str, value: &str) -> Option<serde_json::Value> {
         let mut json: serde_json::Value = serde_json::from_reader(file).ok()?;
         {

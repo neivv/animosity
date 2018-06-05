@@ -2180,6 +2180,9 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
         Some("Open"),
         Some("Cancel")
     );
+    if let Some(path) = select_dir::read_config_entry("open_file") {
+        dialog.set_current_folder(&path);
+    }
     dialog.set_select_multiple(false);
     let filter = gtk::FileFilter::new();
     filter.add_pattern("*.anim");
@@ -2195,6 +2198,11 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     //dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
     let result: gtk::ResponseType = dialog.run().into();
     let result = if result == gtk::ResponseType::Accept {
+        if let Some(path) = dialog.get_filename() {
+            if let Some(parent) = path.parent() {
+                select_dir::set_config_entry("open_file", &parent.to_string_lossy());
+            }
+        }
         dialog.get_filename()
     } else {
         None
