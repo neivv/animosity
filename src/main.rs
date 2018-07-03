@@ -107,7 +107,8 @@ fn main() {
         init_panic_handler();
     }
     let _ = init_log();
-    let app = gtk::Application::new("a.b", gio::ApplicationFlags::empty())
+    let name = format!("animosity.pid_{}", std::process::id());
+    let app = gtk::Application::new(&*name, gio::ApplicationFlags::empty())
         .unwrap_or_else(|e| panic!("Couldn't create app: {}", e));
     app.connect_startup(|app| {
         let ui = create_ui(app);
