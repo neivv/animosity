@@ -2333,15 +2333,15 @@ fn export_frames(
     let enum_prefixes =
         layer_prefixes.iter().enumerate().flat_map(|(i, x)| x.as_ref().map(|x| (i, x)));
     let x_base =
-        frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32) / scale_div as i32;
+        frames.iter().map(|x| i32::from(x.x_off)).min().unwrap_or(0).min(0i32) / scale_div as i32;
     let y_base =
-        frames.iter().map(|x| x.x_off as i32).min().unwrap_or(0).min(0i32) / scale_div as i32;
-    let x_max = frames.iter().map(|x| (x.x_off as i32 + x.width as i32) / scale_div as i32)
+        frames.iter().map(|x| i32::from(x.y_off)).min().unwrap_or(0).min(0i32) / scale_div as i32;
+    let x_max = frames.iter().map(|x| (i32::from(x.x_off) + i32::from(x.width)) / scale_div as i32)
         .max().unwrap_or(1);
-    let y_max = frames.iter().map(|x| (x.y_off as i32 + x.height as i32) / scale_div as i32)
+    let y_max = frames.iter().map(|x| (i32::from(x.y_off) + i32::from(x.height)) / scale_div as i32)
         .max().unwrap_or(1);
-    let out_width = (x_max.max(values.width as i32 / scale_div as i32) - x_base) as u32;
-    let out_height = (y_max.max(values.height as i32 / scale_div as i32) - y_base) as u32;
+    let out_width = (x_max.max(i32::from(values.width) / scale_div as i32) - x_base) as u32;
+    let out_height = (y_max.max(i32::from(values.height) / scale_div as i32) - y_base) as u32;
     for (i, prefix) in enum_prefixes {
         let texture = file.texture(i)?;
         for (n, frame) in frames.iter().enumerate() {
@@ -2352,8 +2352,8 @@ fn export_frames(
 
             let tex_x = frame.tex_x / scale_div as u16;
             let tex_y = frame.tex_y / scale_div as u16;
-            let frame_width = frame.width as u32 / scale_div;
-            let frame_height = frame.height as u32 / scale_div;
+            let frame_width = u32::from(frame.width) / scale_div;
+            let frame_height = u32::from(frame.height) / scale_div;
 
             let blank_left = u32::try_from(frame.x_off as i32 / scale_div as i32 - x_base)?;
             let blank_top = u32::try_from(frame.y_off as i32 / scale_div as i32 - y_base)?;
