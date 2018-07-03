@@ -1303,11 +1303,11 @@ impl SpriteInfo {
                         for &(i, _) in &o.layers {
                             if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
                                 check.set_active(true);
+                                format.set_sensitive(true);
                                 let tex_f = tex_formats.get(i as usize)
                                     .and_then(|x| x.as_ref().ok())
                                     .and_then(|x| x.as_ref());
                                 if let Some(tex_f) = tex_f {
-                                    format.set_sensitive(true);
                                     format.set_active(match tex_f {
                                         anim::TextureFormat::Dxt1 => 0,
                                         anim::TextureFormat::Dxt5 => 1,
