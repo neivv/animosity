@@ -153,15 +153,7 @@ fn ui() -> Rc<Ui> {
 
 impl Ui {
     fn message(&self, msg: &str) {
-        let dialog = gtk::MessageDialog::new(
-            Some(&self.main_window),
-            gtk::DialogFlags::MODAL,
-            gtk::MessageType::Error,
-            gtk::ButtonsType::Ok,
-            msg
-        );
-        dialog.run();
-        dialog.destroy();
+        error_msg_box(&self.main_window, msg);
     }
 
     fn files_changed(&self, files: &files::Files) {
@@ -898,15 +890,7 @@ impl SpriteInfo {
                     };
                     let msg =
                         format!("Wrote {} frames to {}", frame_count, path.to_string_lossy());
-                    let dialog = gtk::MessageDialog::new(
-                        Some(&w),
-                        gtk::DialogFlags::MODAL,
-                        gtk::MessageType::Info,
-                        gtk::ButtonsType::Ok,
-                        &msg
-                    );
-                    dialog.run();
-                    dialog.destroy();
+                    info_msg_box(&w, &msg);
                     w.destroy();
                 }
                 Err(e) => {
@@ -917,15 +901,7 @@ impl SpriteInfo {
                     }
                     // Remove last newline
                     msg.pop();
-                    let dialog = gtk::MessageDialog::new(
-                        Some(&w),
-                        gtk::DialogFlags::MODAL,
-                        gtk::MessageType::Error,
-                        gtk::ButtonsType::Ok,
-                        &msg
-                    );
-                    dialog.run();
-                    dialog.destroy();
+                    error_msg_box(&w, &msg);
                 }
             };
         });
@@ -2757,4 +2733,28 @@ struct FrameInfo {
 fn parse_frame_info(path: &Path) -> Result<FrameInfo, Error> {
     let mut file = File::open(path)?;
     Ok(serde_json::from_reader(&mut file)?)
+}
+
+fn info_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
+    let dialog = gtk::MessageDialog::new(
+        Some(window),
+        gtk::DialogFlags::MODAL,
+        gtk::MessageType::Info,
+        gtk::ButtonsType::Ok,
+        msg.as_ref(),
+    );
+    dialog.run();
+    dialog.destroy();
+}
+
+fn error_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
+    let dialog = gtk::MessageDialog::new(
+        Some(window),
+        gtk::DialogFlags::MODAL,
+        gtk::MessageType::Error,
+        gtk::ButtonsType::Ok,
+        msg.as_ref(),
+    );
+    dialog.run();
+    dialog.destroy();
 }
