@@ -126,7 +126,7 @@ impl IntEntry {
                 if t.disable_edit_events.load(Ordering::Relaxed) == 0 {
                     if let Some(text) = s.get_text() {
                         if let Ok(i) = text.parse::<u32>() {
-                            a.activate(&i.into());
+                            a.activate(Some(&i.into()));
                         }
                     }
                 }
