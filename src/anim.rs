@@ -456,12 +456,6 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
             };
             read = rest;
             let alpha = block.read_u64::<LE>()?;
-            if alpha & !0xff00 == 0 {
-                // Fully transparent block, rest can be skipped since `out` was zero-filled =)
-                // (Full transparency can be specified in several ways though, and this won't
-                // catch them all)
-                continue 'single_block;
-            }
             let a0_raw = (alpha & 0xff) as u8;
             let a1_raw = ((alpha >> 8) & 0xff) as u8;
             let a0 = a0_raw as f32;
