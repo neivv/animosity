@@ -423,7 +423,7 @@ fn encode_dxt5(
                         block[(block_y * 4 + block_x) as usize].copy_from_slice(input_slice);
                     }
                 }
-                let has_far_alpha = block.iter().any(|x| x[3] < 16) ||
+                let has_far_alpha = block.iter().any(|x| x[3] < 16) &&
                     block.iter().any(|x| x[3] >= 240);
                 let alpha = if has_far_alpha {
                     dxt5_alpha5(&block)
@@ -566,23 +566,6 @@ fn distances_sum4(block: &[[u8; 4]; 16], squared: &[SquaredColor; 4]) -> i32 {
             square_distance(color, squared[3]),
         ];
         sum += distances.iter().cloned().min().unwrap();
-    }
-    sum
-}
-
-fn distances_sum_dxt5(block: &[[u8; 4]; 16], squared: &[SquaredColor; 4]) -> i32 {
-    let mut sum = 0i32;
-    for x in block {
-        if x[3] > 32 {
-            let color = (x[0] as i32, x[1] as i32, x[2] as i32);
-            let distances = [
-                square_distance(color, squared[0]),
-                square_distance(color, squared[1]),
-                square_distance(color, squared[2]),
-                square_distance(color, squared[3]),
-            ];
-            sum += distances.iter().cloned().min().unwrap();
-        }
     }
     sum
 }
@@ -775,161 +758,6 @@ fn colors_dxt1_no_alpha(block: &[[u8; 4]; 16]) -> (u32, u32) {
         first.2 - (first.2 - second.2) / 3 * 2,
     );
     let (first, second) = {
-        let variant1_sum = distances_sum_dxt5(
-            block,
-            &[first_squared, second_squared, square_color(first_mid), square_color(second_mid)],
-        );
-        let variant2_first = (
-            color_towards(first.0 as i32, second.0 as i32, 6),
-            color_towards(first.1 as i32, second.1 as i32, 6),
-            color_towards(first.2 as i32, second.2 as i32, 6),
-        );
-        let variant2_first_squared = square_color(variant2_first);
-        let variant2_second = (
-            color_towards(second.0 as i32, first.0 as i32, 6),
-            color_towards(second.1 as i32, first.1 as i32, 6),
-            color_towards(second.2 as i32, first.2 as i32, 6),
-        );
-        let variant2_second_squared = square_color(variant2_second);
-        let variant2_first_mid = (
-            variant2_first.0 - (variant2_first.0 - variant2_second.0) / 3,
-            variant2_first.1 - (variant2_first.1 - variant2_second.1) / 3,
-            variant2_first.2 - (variant2_first.2 - variant2_second.2) / 3,
-        );
-        let variant2_second_mid = (
-            variant2_first.0 - (variant2_first.0 - variant2_second.0) / 3 * 2,
-            variant2_first.1 - (variant2_first.1 - variant2_second.1) / 3 * 2,
-            variant2_first.2 - (variant2_first.2 - variant2_second.2) / 3 * 2,
-        );
-        let variant2_sum = distances_sum_dxt5(
-            block,
-            &[
-                variant2_first_squared,
-                variant2_second_squared,
-                square_color(variant2_first_mid),
-                square_color(variant2_second_mid),
-            ],
-        );
-        if variant1_sum <= variant2_sum {
-            (first, second)
-        } else {
-            (variant2_first, variant2_second)
-        }
-    };
-    let mut first_16bit = (
-        ((first.0 + 3) & !0x7).min(255),
-        ((first.1 + 1) & !0x3).min(255),
-        ((first.2 + 3) & !0x7).min(255),
-    );
-    let mut second_16bit = (
-        ((second.0 + 3) & !0x7).min(255),
-        ((second.1 + 1) & !0x3).min(255),
-        ((second.2 + 3) & !0x7).min(255),
-    );
-    if first_16bit == second_16bit {
-        // Could be better logic, now just toggles a green bit
-        second_16bit.1 ^= 0x4;
-    }
-    let mut first_raw = ((first_16bit.0 & 0xf8) << 8) |
-        ((first_16bit.1 & 0xfc) << 3) |
-        ((first_16bit.2 & 0xf8) >> 3);
-    let mut second_raw = ((second_16bit.0 & 0xf8) << 8) |
-        ((second_16bit.1 & 0xfc) << 3) |
-        ((second_16bit.2 & 0xf8) >> 3);
-    // First has to be larger
-    if first_raw < second_raw {
-        mem::swap(&mut first_raw, &mut second_raw);
-        mem::swap(&mut first_16bit, &mut second_16bit);
-    }
-    let first_mid = (
-        (first.0 * 2 + second.0) / 3,
-        (first.1 * 2 + second.1) / 3,
-        (first.2 * 2 + second.2) / 3,
-    );
-    let second_mid = (
-        (second.0 * 2 + first.0) / 3,
-        (second.1 * 2 + first.1) / 3,
-        (second.2 * 2 + first.2) / 3,
-    );
-    let squared = [
-        square_color(first_16bit),
-        square_color(second_16bit),
-        square_color(first_mid),
-        square_color(second_mid),
-    ];
-    let mut lookup = 0;
-    for pixel in block.iter().rev() {
-        lookup = lookup << 2;
-        let color = (pixel[0] as i32, pixel[1] as i32, pixel[2] as i32);
-        let distances = [
-            square_distance(color, squared[0]),
-            square_distance(color, squared[1]),
-            square_distance(color, squared[2]),
-            square_distance(color, squared[3]),
-        ];
-        let index = distances.iter().enumerate()
-            .min_by_key(|(_i, &x)| x)
-            .unwrap().0 as u32;
-        lookup |= index;
-    }
-    (first_raw as u32 | ((second_raw as u32) << 16), lookup)
-}
-
-#[allow(unused_parens)]
-fn colors_dxt5(block: &[[u8; 4]; 16]) -> (u32, u32) {
-    // Calculate average of colors,
-    // Calculate furthest color from average,
-    // Calculate furthest color from furthest,
-    // Try two variations for the actual colors.
-    let mut color_sum = (0i32, 0i32, 0i32);
-    for c in block {
-        if c[3] > 32 {
-            color_sum.0 += c[0] as i32;
-            color_sum.1 += c[1] as i32;
-            color_sum.2 += c[2] as i32;
-        }
-    }
-    let average_color = (
-        color_sum.0 / 16,
-        color_sum.1 / 16,
-        color_sum.2 / 16,
-    );
-    let average_squared = square_color(average_color);
-
-    let furthest_color = |compare_squared: SquaredColor| {
-        let mut furthest_color = (0, 0, 0);
-        let mut furthest_distance = 0;
-
-        for c in block {
-            if c[3] > 32 {
-                let distance = (compare_squared.0 - (
-                    (c[0] as i32 * c[0] as i32) +
-                    (c[1] as i32 * c[1] as i32) +
-                    (c[2] as i32 * c[2] as i32)
-                )).abs();
-                if distance > furthest_distance {
-                    furthest_distance = distance;
-                    furthest_color = (c[0] as i32, c[1] as i32, c[2] as i32);
-                }
-            }
-        }
-        furthest_color
-    };
-    let first = furthest_color(average_squared);
-    let first_squared = square_color(first);
-    let second = furthest_color(first_squared);
-    let second_squared = square_color(second);
-    let first_mid = (
-        first.0 - (first.0 - second.0) / 3,
-        first.1 - (first.1 - second.1) / 3,
-        first.2 - (first.2 - second.2) / 3,
-    );
-    let second_mid = (
-        first.0 - (first.0 - second.0) / 3 * 2,
-        first.1 - (first.1 - second.1) / 3 * 2,
-        first.2 - (first.2 - second.2) / 3 * 2,
-    );
-    let (first, second) = {
         let variant1_sum = distances_sum4(
             block,
             &[first_squared, second_squared, square_color(first_mid), square_color(second_mid)],
@@ -1030,8 +858,13 @@ fn colors_dxt5(block: &[[u8; 4]; 16]) -> (u32, u32) {
     (first_raw as u32 | ((second_raw as u32) << 16), lookup)
 }
 
+#[allow(unused_parens)]
+fn colors_dxt5(block: &[[u8; 4]; 16]) -> (u32, u32) {
+    colors_dxt1_no_alpha(block)
+}
+
 fn dxt5_alpha5_far(val: u8) -> bool {
-    val < 16 || val >= 240
+    val < 8 || val >= 248
 }
 
 #[allow(unused_parens)]

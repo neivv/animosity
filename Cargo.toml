@@ -1,6 +1,6 @@
 [package]
 name = "animosity"
-version = "0.1.8"
+version = "0.1.9"
 authors = ["Markus Heikkinen <ittevien@gmail.com>"]
 
 [profile.release]
