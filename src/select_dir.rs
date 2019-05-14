@@ -99,7 +99,7 @@ impl SelectDir {
         let w = window.clone();
         button.connect_clicked(move |_| {
             let dir = e.get_text();
-            if let Some(path) = choose_dir_dialog(&w, &dir) {
+            if let Some(path) = choose_dir_dialog(&w, &dir.map(|x| x.into())) {
                 let val = path.to_string_lossy();
                 e.set_text(&val);
                 e.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
@@ -118,7 +118,7 @@ impl SelectDir {
     }
 
     pub fn text(&self) -> Option<String> {
-        self.entry.get_text()
+        self.entry.get_text().map(|x| x.into())
     }
 }
 
@@ -170,7 +170,7 @@ impl SelectFile {
     }
 
     pub fn text(&self) -> Option<String> {
-        self.entry.get_text()
+        self.entry.get_text().map(|x| x.into())
     }
 
     pub fn on_change<F: FnMut(&str) + 'static>(&self, fun: F) {
@@ -197,11 +197,11 @@ fn choose_file_dialog(
     dialog.set_select_multiple(false);
     let filter = gtk::FileFilter::new();
     filter.add_pattern(pattern);
-    gtk::FileFilterExt::set_name(&filter, name);
+    filter.set_name(name);
     dialog.add_filter(&filter);
     let filter = gtk::FileFilter::new();
     filter.add_pattern("*.*");
-    gtk::FileFilterExt::set_name(&filter, "All files");
+    filter.set_name("All files");
     dialog.add_filter(&filter);
     let result: gtk::ResponseType = dialog.run().into();
     let result = if result == gtk::ResponseType::Accept {

@@ -1,4 +1,3 @@
-#![feature(try_from)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 extern crate app_dirs;
@@ -200,7 +199,8 @@ impl ScrolledList {
         list.append_column(&col);
         list.set_headers_visible(false);
 
-        let root = gtk::ScrolledWindow::new(None, None);
+        let none: Option<&gtk::Adjustment> = None;
+        let root = gtk::ScrolledWindow::new(none, none);
         root.add(&list);
         root.set_overlay_scrolling(false);
         ScrolledList {
@@ -216,7 +216,8 @@ impl ScrolledList {
 
     fn select(&self, index: usize) {
         let path = gtk::TreePath::new_from_indicesv(&[index as i32]);
-        self.list.set_cursor(&path, None, false);
+        let none: Option<&gtk::TreeViewColumn> = None;
+        self.list.set_cursor(&path, none, false);
     }
 
     fn columns_autosize(&self) {
@@ -314,7 +315,7 @@ impl SpriteValues {
             let check = self.ref_enable.clone();
             let i = self.ref_index.clone();
             let d = disable_check.clone();
-            <_ as gio::SimpleActionExt>::connect_property_enabled_notify(&a, move |s| {
+            a.connect_property_enabled_notify(move |s| {
                 let enabled = s.get_enabled();
                 check.set_sensitive(enabled);
                 i.frame.set_sensitive(enabled);
@@ -632,7 +633,8 @@ impl SpriteInfo {
         sprite_bx.pack_start(&data_bx, false, false, 0);
         sprite_bx.pack_start(&draw_area, true, true, 0);
         let files = gtk::TextView::new();
-        let file_list = gtk::TextBuffer::new(None);
+        let none: Option<&gtk::TextTagTable> = None;
+        let file_list = gtk::TextBuffer::new(none);
         file_list.set_text("\n\n\n");
         files.set_buffer(Some(&file_list));
         files.set_editable(false);
@@ -712,7 +714,6 @@ impl SpriteInfo {
                     let (data, width, height) = gl.framebuf_bytes();
                     let surface = cairo::ImageSurface::create_for_data(
                         data.into_boxed_slice(),
-                        |_| {},
                         cairo::Format::ARgb32,
                         width as i32,
                         height as i32,
@@ -720,7 +721,7 @@ impl SpriteInfo {
                     ).expect("Couldn't create cairo image surface");
                     // Could recycle the surface?
                     let pattern = cairo::SurfacePattern::create(&surface);
-                    cairo.set_source(&pattern);
+                    cairo.set_source(&cairo::Pattern::SurfacePattern(pattern));
                     cairo.paint();
                 }
                 Err(e) => {
@@ -862,13 +863,13 @@ impl SpriteInfo {
             let layers_to_export;
             let result = if is_anim {
                 let framedef: PathBuf = match framedef_entry.get_text() {
-                    Some(s) => s.into(),
+                    Some(s) => String::from(s).into(),
                     None => return,
                 };
 
                 layers_to_export = checkboxes.iter().map(|(check, entry)| {
                     if check.get_active() {
-                        Some(entry.get_text().unwrap_or_else(|| String::new()))
+                        Some(entry.get_text().map(|x| x.into()).unwrap_or_else(|| String::new()))
                     } else {
                         None
                     }
@@ -876,7 +877,9 @@ impl SpriteInfo {
                 export_frames(&file, tex_id.1, &path, &framedef, &layers_to_export)
             } else {
                 let prefix = grp_prefix.as_ref()
-                    .and_then(|x| x.get_text()).unwrap_or_else(String::new);
+                    .and_then(|x| x.get_text())
+                    .map(|x| x.into())
+                    .unwrap_or_else(String::new);
                 layers_to_export = Vec::new();
                 export_grp(&file, &path, &prefix)
             };
@@ -896,7 +899,7 @@ impl SpriteInfo {
                 Err(e) => {
                     use std::fmt::Write;
                     let mut msg = format!("Unable to export frames:\n");
-                    for c in e.causes() {
+                    for c in e.iter_chain() {
                         writeln!(msg, "{}", c).unwrap();
                     }
                     // Remove last newline
@@ -1121,9 +1124,9 @@ impl SpriteInfo {
             let result = if is_anim {
                 let formats = c.iter().map(|x| {
                     Ok(match x.1.get_active() {
-                        0 => anim::TextureFormat::Dxt1,
-                        1 => anim::TextureFormat::Dxt5,
-                        2 => anim::TextureFormat::Monochrome,
+                        Some(0) => anim::TextureFormat::Dxt1,
+                        Some(1) => anim::TextureFormat::Dxt5,
+                        Some(2) => anim::TextureFormat::Monochrome,
                         _ => {
                             if x.0.get_active() {
                                 return Err(());
@@ -1171,9 +1174,9 @@ impl SpriteInfo {
             } else {
                 let format = match grp_format {
                     Some(ref s) => match s.get_active() {
-                        0 => Ok(anim::TextureFormat::Dxt1),
-                        1 => Ok(anim::TextureFormat::Dxt5),
-                        2 => Ok(anim::TextureFormat::Monochrome),
+                        Some(0) => Ok(anim::TextureFormat::Dxt1),
+                        Some(1) => Ok(anim::TextureFormat::Dxt5),
+                        Some(2) => Ok(anim::TextureFormat::Monochrome),
                         _ => Err(()),
                     },
                     None => return,
@@ -1246,7 +1249,7 @@ impl SpriteInfo {
                     drop(files);
                     use std::fmt::Write;
                     let mut msg = format!("Unable to import frames:\n");
-                    for c in e.causes() {
+                    for c in e.iter_chain() {
                         writeln!(msg, "{}", c).unwrap();
                     }
                     // Remove last newline
@@ -1274,7 +1277,7 @@ impl SpriteInfo {
                         for &(ref check, ref format) in &checkboxes {
                             check.set_active(false);
                             format.set_sensitive(false);
-                            format.set_active(-1);
+                            format.set_active(None);
                         }
                         for &(i, _) in &o.layers {
                             if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
@@ -1304,10 +1307,10 @@ impl SpriteInfo {
                         for &(ref check, ref format) in &checkboxes {
                             check.set_active(false);
                             format.set_sensitive(false);
-                            format.set_active(-1);
+                            format.set_active(None);
                         }
                         let mut msg = format!("Frame info invalid:\n");
-                        for c in e.causes() {
+                        for c in e.iter_chain() {
                             use std::fmt::Write;
                             writeln!(msg, "{}", c).unwrap();
                         }
@@ -1887,9 +1890,6 @@ impl SpriteInfo {
 }
 
 fn create_menu() -> gio::Menu {
-    use gio::MenuExt;
-    use gio::MenuItemExt;
-
     let with_accel = |name: &str, action: &str, accel: &str| {
         let item = gio::MenuItem::new(Some(name), Some(action));
         if accel != "" {
@@ -1961,7 +1961,7 @@ fn save() -> Result<(), Error> {
     if let Err(ref e) = result {
         use std::fmt::Write;
         let mut msg = format!("Unable to save:\n");
-        for c in e.causes() {
+        for c in e.iter_chain() {
             writeln!(msg, "{}", c).unwrap();
         }
         // Remove last newline
@@ -1996,9 +1996,9 @@ fn check_unsaved_files() -> bool {
             gtk::ButtonsType::None,
             &msg,
         );
-        dialog.add_button("Save", 1);
-        dialog.add_button("Discard changes", 2);
-        dialog.add_button("Cancel", 3);
+        dialog.add_button("Save", gtk::ResponseType::Other(1));
+        dialog.add_button("Discard changes", gtk::ResponseType::Other(2));
+        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
         let result = dialog.run();
         dialog.destroy();
         match result {
@@ -2139,7 +2139,7 @@ fn open(filename: &Path) {
         Err(e) => {
             use std::fmt::Write;
             let mut msg = format!("Unable to open file:\n");
-            for c in e.causes() {
+            for c in e.iter_chain() {
                 writeln!(msg, "{}", c).unwrap();
             }
             // Remove last newline
@@ -2165,11 +2165,11 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     filter.add_pattern("*.anim");
     filter.add_pattern("*.dds.grp");
     filter.add_pattern("*.dds.vr4");
-    gtk::FileFilterExt::set_name(&filter, "Valid files");
+    filter.set_name("Valid files");
     dialog.add_filter(&filter);
     let filter = gtk::FileFilter::new();
     filter.add_pattern("*.*");
-    gtk::FileFilterExt::set_name(&filter, "All files");
+    filter.set_name("All files");
     dialog.add_filter(&filter);
     //dialog.add_button("Open", gtk::ResponseType::Accept.into());
     //dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
@@ -2241,10 +2241,10 @@ fn create_ui(app: &gtk::Application) -> Ui {
     });
     window.set_title(&title(None, false));
     window.resize(800, 600);
-    if let Some(style_ctx) = window.get_style_context() {
-        let css = ::get_css_provider();
-        style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
-    }
+    let style_ctx = window.get_style_context();
+    let css = ::get_css_provider();
+    style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
+
     Ui {
         app: app.clone(),
         main_window: window,
