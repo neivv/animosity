@@ -19,6 +19,7 @@ extern crate serde_json;
 
 mod anim;
 mod anim_encoder;
+mod combo_box_enum;
 mod ddsgrp;
 mod frame_import;
 mod gl;
@@ -968,7 +969,6 @@ impl SpriteInfo {
         };
 
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
-        let bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
 
         let mut framedef_filename = None;
         let framedef_status = gtk::Label::new(None);
@@ -1018,6 +1018,11 @@ impl SpriteInfo {
 
         let mut checkboxes = Vec::with_capacity(layer_names.len());
         let mut grp_format = None;
+        static FORMATS: &[(anim::TextureFormat, &str)] = &[
+            (anim::TextureFormat::Dxt1, "DXT1"),
+            (anim::TextureFormat::Dxt5, "DXT5"),
+            (anim::TextureFormat::Monochrome, "Monochrome"),
+        ];
         let layers_bx = if is_anim {
             let grid = gtk::Grid::new();
             grid.set_column_spacing(5);
@@ -1033,29 +1038,19 @@ impl SpriteInfo {
                 let label = gtk::Label::new(Some(&**name));
                 grid.attach(&label, 1, row, 1, 1);
                 label.set_halign(gtk::Align::Start);
-                let format = gtk::ComboBoxText::new();
-                format.append_text("DXT1");
-                format.append_text("DXT5");
-                format.append_text("Monochrome");
-                grid.attach(&format, 2, row, 1, 1);
+                let format = combo_box_enum::ComboBoxEnum::new(FORMATS);
+                grid.attach(format.widget(), 2, row, 1, 1);
 
                 checkboxes.push((checkbox, format));
             }
             label_section("Layers", &grid)
         } else {
-            let format = gtk::ComboBoxText::new();
-            format.append_text("DXT1");
-            format.append_text("DXT5");
-            format.append_text("Monochrome");
+            let format = combo_box_enum::ComboBoxEnum::new(FORMATS);
             if let Some(Ok(Some(tex_f))) = tex_formats.get(0) {
-                format.set_active(match tex_f {
-                    anim::TextureFormat::Dxt1 => 0,
-                    anim::TextureFormat::Dxt5 => 1,
-                    anim::TextureFormat::Monochrome => 2,
-                });
+                format.set_active(tex_f);
             }
 
-            let bx = label_section("Encode format", &format);
+            let bx = label_section("Encode format", format.widget());
             grp_format = Some(format);
             bx
         };
@@ -1087,7 +1082,8 @@ impl SpriteInfo {
         let hd2_fi = hd2_frame_info.clone();
         let fi_entry = framedef.clone();
         let hd2_fi_entry = hd2_framedef.clone();
-        let c = checkboxes.clone();
+        let checkboxes = Rc::new(checkboxes);
+        let checkboxes2 = checkboxes.clone();
         ok_button.connect_clicked(move |_| {
             // Used for grps
             let filename_prefix;
@@ -1123,12 +1119,10 @@ impl SpriteInfo {
             });
             let mut files = s.files.borrow_mut();
             let result = if is_anim {
-                let formats = c.iter().map(|x| {
+                let formats = checkboxes2.iter().map(|x| {
                     Ok(match x.1.get_active() {
-                        Some(0) => anim::TextureFormat::Dxt1,
-                        Some(1) => anim::TextureFormat::Dxt5,
-                        Some(2) => anim::TextureFormat::Monochrome,
-                        _ => {
+                        Some(x) => x,
+                        None => {
                             if x.0.get_active() {
                                 return Err(());
                             }
@@ -1166,17 +1160,12 @@ impl SpriteInfo {
                 result.map(|()| frame_count)
             } else {
                 let format = match grp_format {
-                    Some(ref s) => match s.get_active() {
-                        Some(0) => Ok(anim::TextureFormat::Dxt1),
-                        Some(1) => Ok(anim::TextureFormat::Dxt5),
-                        Some(2) => Ok(anim::TextureFormat::Monochrome),
-                        _ => Err(()),
-                    },
+                    Some(ref s) => s.get_active(),
                     None => return,
                 };
                 let format = match format {
-                    Ok(o) => o,
-                    Err(()) => {
+                    Some(o) => o,
+                    None => {
                         error_msg_box(&w, "Format not specified");
                         return;
                     }
@@ -1234,10 +1223,10 @@ impl SpriteInfo {
                 match parse_frame_info(Path::new(filename)) {
                     Ok(o) => {
                         ok.set_sensitive(true);
-                        for &(ref check, ref format) in &checkboxes {
+                        for &(ref check, ref format) in checkboxes.iter() {
                             check.set_active(false);
                             format.set_sensitive(false);
-                            format.set_active(None);
+                            format.clear_active();
                         }
                         for &(i, _) in &o.layers {
                             if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
@@ -1247,11 +1236,7 @@ impl SpriteInfo {
                                     .and_then(|x| x.as_ref().ok())
                                     .and_then(|x| x.as_ref());
                                 if let Some(tex_f) = tex_f {
-                                    format.set_active(match tex_f {
-                                        anim::TextureFormat::Dxt1 => 0,
-                                        anim::TextureFormat::Dxt5 => 1,
-                                        anim::TextureFormat::Monochrome => 2,
-                                    });
+                                    format.set_active(tex_f);
                                 }
                             }
                         }
@@ -1264,10 +1249,10 @@ impl SpriteInfo {
                     }
                     Err(e) => {
                         ok.set_sensitive(false);
-                        for &(ref check, ref format) in &checkboxes {
+                        for &(ref check, ref format) in checkboxes.iter() {
                             check.set_active(false);
                             format.set_sensitive(false);
-                            format.set_active(None);
+                            format.clear_active();
                         }
                         let mut msg = format!("Frame info invalid:\n");
                         for c in e.iter_chain() {
@@ -1305,6 +1290,7 @@ impl SpriteInfo {
 
         button_bx.pack_end(&cancel_button, false, false, 0);
         button_bx.pack_end(&ok_button, false, false, 0);
+        let bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
         bx.pack_start(&framedef_bx, false, false, 0);
         if let Some(hd2) = hd2_framedef_bx {
             bx.pack_start(&hd2, false, false, 0);
