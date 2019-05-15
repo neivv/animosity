@@ -14,13 +14,14 @@ use crate::{SpriteType, Error};
 
 // Won't export layers with None prefix,
 // framedef_file is joined to path, as are the image names
-pub fn export_frames(
+pub fn export_frames<F: Fn(f32)>(
     file: &files::File,
     ty: SpriteType,
     path: &Path,
     framedef_file: &Path,
     layer_prefixes: &[Option<String>],
     single_image: bool,
+    report_progress: F,
 ) -> Result<(), Error> {
     if !path.is_dir() {
         return Err(format_err!("{} is not a directory", path.to_string_lossy()));
@@ -49,6 +50,9 @@ pub fn export_frames(
     let frame_width = (x_max.max(i32::from(values.width) / scale_div as i32) - x_base) as u32;
     let frame_height = (y_max.max(i32::from(values.height) / scale_div as i32) - y_base) as u32;
     let mut multi_frame_images = Vec::new();
+    let mut step = 1.0;
+    let layer_count = layer_prefixes.iter().filter(|x| x.is_some()).count();
+    let step_count = (layer_count * frames.len()) as f32;
     for (i, prefix) in enum_prefixes {
         let texture = file.texture(i)?;
         if single_image {
@@ -74,6 +78,8 @@ pub fn export_frames(
                     x_base,
                     y_base,
                 ).with_context(|_| format!("Writing frame {}", n))?;
+                report_progress(step / step_count);
+                step += 1.0;
             }
 
             let mut encoder = png::Encoder::new(out, image_width, image_height);
@@ -103,6 +109,8 @@ pub fn export_frames(
                     x_base,
                     y_base,
                 ).with_context(|_| format!("Writing frame {}", n))?;
+                report_progress(step / step_count);
+                step += 1.0;
             }
         }
     }
@@ -232,12 +240,13 @@ fn write_frame(
     Ok(())
 }
 
-pub fn export_grp(
+pub fn export_grp<F: Fn(f32)>(
     file: &files::File,
     path: &Path,
     prefix: &str,
     framedef_file: &Path,
     single_image: bool,
+    report_progress: F,
 ) -> Result<(), Error> {
     if !path.is_dir() {
         return Err(format_err!("{} is not a directory", path.to_string_lossy()));
@@ -245,8 +254,11 @@ pub fn export_grp(
 
     let mut multi_frame_images = Vec::new();
 
+    let layer_count = file.layer_count();
+    let mut step = 1.0;
     if single_image {
-        let layer_count = file.layer_count();
+        // Adding 20% for PNG encoding
+        let step_count = layer_count as f32 * 1.25;
         assert!(layer_count > 0);
         let frame_width = (0..layer_count)
             .flat_map(|i| file.texture(i).ok())
@@ -290,6 +302,8 @@ pub fn export_grp(
             if texture.width != frame_width || texture.height != frame_height {
                 frame_size_overrides.insert(i as u32, (texture.width, texture.height));
             }
+            report_progress(step / step_count);
+            step += 1.0;
         }
 
         let mut encoder = png::Encoder::new(out, image_width, image_height);
@@ -307,6 +321,7 @@ pub fn export_grp(
             frame_size_overrides,
         });
     } else {
+        let step_count = layer_count as f32;
         for i in 0..file.layer_count() {
             let texture = file.texture(i)?;
 
@@ -329,6 +344,8 @@ pub fn export_grp(
                 frame_height: texture.height,
                 frame_size_overrides: HashMap::default(),
             });
+            report_progress(step / step_count);
+            step += 1.0;
         }
     }
 

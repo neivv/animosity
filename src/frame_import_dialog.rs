@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,13 +13,20 @@ use crate::frame_import;
 use crate::frame_info::{FrameInfo, parse_frame_info};
 use crate::int_entry::{IntSize, IntEntry};
 use crate::select_dir::{self, read_config_entry, set_config_entry};
-use crate::{label_section, lookup_action, error_msg_box, info_msg_box, SpriteInfo, SpriteType};
+use crate::{
+    label_section, lookup_action, error_msg_box, info_msg_box, SpriteInfo, SpriteType, Error,
+};
 
 use crate::ui_helpers::*;
 
+enum Progress {
+    Done(Result<u32, Error>),
+    Progress(f32),
+}
+
 pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
     let tex_id = sprite_info.tex_id();
-    let mut files = match sprite_info.files.try_borrow_mut() {
+    let mut files = match sprite_info.files.try_lock() {
         Ok(o) => o,
         _ => return,
     };
@@ -60,7 +67,6 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
 
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
 
-    let mut framedef_filename = None;
     let framedef_status = gtk::Label::new(None);
     framedef_status.set_halign(gtk::Align::Start);
     let framedef;
@@ -83,10 +89,6 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             framedef_scale.widget(),
             &framedef_status,
         ]);
-        framedef_filename = framedef.text().and_then(|x| match x.is_empty() {
-            true => None,
-            false => Some(x),
-        });
         if has_hd2 {
             let hd2_framedef_ = Rc::new(select_dir::SelectFile::new(
                 &window, "import_frames_hd2", "Text files", "*.json"
@@ -118,6 +120,10 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         ]);
         label_section("Frame info file", &inner_bx)
     };
+    let framedef_filename = framedef.text().and_then(|x| match x.is_empty() {
+        true => None,
+        false => Some(x),
+    });
 
     let mut checkboxes = Vec::with_capacity(layer_names.len());
     let mut grp_format = None;
@@ -195,7 +201,17 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let hd2_fi_entry = hd2_framedef.clone();
     let checkboxes = Rc::new(checkboxes);
     let checkboxes2 = checkboxes.clone();
+
+    let progress = gtk::ProgressBar::new();
+    let progress2 = progress.clone();
+    let waiting_for_thread = Rc::new(Cell::new(false));
+    let waiting_for_thread2 = waiting_for_thread.clone();
+    let rest_of_ui: Rc<RefCell<Vec<gtk::Box>>> = Rc::new(RefCell::new(Vec::new()));
+    let rest_of_ui2 = rest_of_ui.clone();
     ok_button.connect_clicked(move |_| {
+        if waiting_for_thread.get() {
+            return;
+        }
         // Used for grps
         let dir = match fi_entry.text() {
             Some(s) => {
@@ -217,13 +233,14 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 Some(buf)
             }
         });
-        let mut files = sprite_info.files.borrow_mut();
         let fi = fi.borrow();
         let frame_info = match *fi {
-            Some(ref s) => s,
+            Some(ref s) => (*s).clone(),
             None => return,
         };
-        let result = if is_anim {
+        let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
+        let files_arc = sprite_info.files.clone();
+        if is_anim {
             let formats = checkboxes2.iter().map(|x| {
                 Ok(match x.1.get_active() {
                     Some(x) => x,
@@ -243,7 +260,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     return;
                 }
             };
-            let hd2_fi = hd2_fi.borrow();
+            let hd2_fi = (*hd2_fi.borrow()).clone();
             let frame_scale = match framedef_scale.get_active() {
                 Some(s) => s.to_float(),
                 None => {
@@ -263,21 +280,25 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 None
             };
 
-            let result = frame_import::import_frames(
-                &mut files,
-                frame_info,
-                hd2_fi.as_ref(),
-                &dir,
-                hd2_dir.as_ref().map(|x| &**x),
-                frame_scale,
-                hd2_scale,
-                &formats,
-                tex_id.0,
-                tex_id.1,
-            );
             let frame_count = if hd2_fi.is_some() { 2 } else { 1 } *
                 frame_info.layers.len() as u32 * frame_info.frame_count;
-            result.map(|()| frame_count)
+            std::thread::spawn(move || {
+                let mut files = files_arc.lock().unwrap();
+                let result = frame_import::import_frames(
+                    &mut files,
+                    &frame_info,
+                    hd2_fi.as_ref(),
+                    &dir,
+                    hd2_dir.as_ref().map(|x| &**x),
+                    frame_scale,
+                    hd2_scale,
+                    &formats,
+                    tex_id.0,
+                    tex_id.1,
+                    |step| send.send(Progress::Progress(step)).unwrap(),
+                );
+                let _ = send.send(Progress::Done(result.map(|()| frame_count)));
+            });
         } else {
             let format = match grp_format {
                 Some(ref s) => s.get_active(),
@@ -298,43 +319,70 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     return;
                 }
             };
-            let result = frame_import::import_frames_grp(
-                &mut files,
-                frame_info,
-                &dir,
-                frame_scale,
-                format,
-                tex_id.0,
-                scale,
-            );
-            result.map(|()| frame_info.frame_count)
-        };
-        match result {
-            Ok(frame_count) => {
-                sprite_info.draw_clear_all();
-                if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
-                    sprite_info.changed_ty(tex_id, &mut file);
-                }
-                drop(files);
-                if let Some(a) = lookup_action(&sprite_info.sprite_actions, "is_dirty") {
-                    a.activate(Some(&true.to_variant()));
-                }
-
-                info_msg_box(&w, format!("Imported {} frames", frame_count));
-                w.destroy();
-            }
-            Err(e) => {
-                drop(files);
-                use std::fmt::Write;
-                let mut msg = format!("Unable to import frames:\n");
-                for c in e.iter_chain() {
-                    writeln!(msg, "{}", c).unwrap();
-                }
-                // Remove last newline
-                msg.pop();
-                error_msg_box(&w, msg);
-            }
+            std::thread::spawn(move || {
+                let mut files = files_arc.lock().unwrap();
+                let result = frame_import::import_frames_grp(
+                    &mut files,
+                    &frame_info,
+                    &dir,
+                    frame_scale,
+                    format,
+                    tex_id.0,
+                    scale,
+                    |step| send.send(Progress::Progress(step)).unwrap(),
+                );
+                let _ = send.send(Progress::Done(result.map(|()| frame_info.frame_count)));
+            });
         }
+        let rest_of_ui = rest_of_ui2.clone();
+        let window = w.clone();
+        let progress = progress2.clone();
+        waiting_for_thread.set(true);
+        for part in rest_of_ui.borrow().iter() {
+            part.set_sensitive(false);
+        }
+        let waiting_for_thread = waiting_for_thread.clone();
+        let sprite_info = sprite_info.clone();
+        let files_arc = sprite_info.files.clone();
+        recv.attach(None, move |status| match status {
+            Progress::Done(result) => {
+                waiting_for_thread.set(false);
+                for part in rest_of_ui.borrow().iter() {
+                    part.set_sensitive(true);
+                }
+                match result {
+                    Ok(frame_count) => {
+                        let mut files = files_arc.lock().unwrap();
+                        sprite_info.draw_clear_all();
+                        if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
+                            sprite_info.changed_ty(tex_id, &mut file);
+                        }
+                        drop(files);
+                        if let Some(a) = lookup_action(&sprite_info.sprite_actions, "is_dirty") {
+                            a.activate(Some(&true.to_variant()));
+                        }
+
+                        info_msg_box(&window, format!("Imported {} frames", frame_count));
+                        window.destroy();
+                    }
+                    Err(e) => {
+                        use std::fmt::Write;
+                        let mut msg = format!("Unable to import frames:\n");
+                        for c in e.iter_chain() {
+                            writeln!(msg, "{}", c).unwrap();
+                        }
+                        // Remove last newline
+                        msg.pop();
+                        error_msg_box(&window, msg);
+                    }
+                }
+                glib::Continue(false)
+            }
+            Progress::Progress(step) => {
+                progress.set_fraction(step as f64);
+                glib::Continue(true)
+            }
+        });
     });
 
     let ok = ok_button.clone();
@@ -409,16 +457,21 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
 
     button_bx.pack_end(&cancel_button, false, false, 0);
     button_bx.pack_end(&ok_button, false, false, 0);
-    let bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    bx.pack_start(&framedef_bx, false, false, 0);
+    let rest_bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    rest_bx.pack_start(&framedef_bx, false, false, 0);
     if let Some(hd2) = hd2_framedef_bx {
-        bx.pack_start(&hd2, false, false, 0);
+        rest_bx.pack_start(&hd2, false, false, 0);
     }
-    bx.pack_start(&layers_bx, false, false, 0);
+    rest_bx.pack_start(&layers_bx, false, false, 0);
     if let Some(scale) = grp_scale_bx {
-        bx.pack_start(&scale, false, false, 0);
+        rest_bx.pack_start(&scale, false, false, 0);
     }
-    bx.pack_start(&button_bx, false, false, 0);
+    let bx = box_vertical(&[
+        &rest_bx,
+        &progress,
+        &button_bx,
+    ]);
+    *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
     window.add(&bx);
     window.set_border_width(10);
     window.set_property_default_width(350);
@@ -429,6 +482,9 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             window.set_title(&format!("Import frames of {}", filename.to_string_lossy()));
         }
     }
+    window.connect_delete_event(move |_, _| {
+        Inhibit(waiting_for_thread2.get())
+    });
     window.set_modal(true);
     window.set_transient_for(Some(parent));
     window.show_all();

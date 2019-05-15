@@ -13,7 +13,7 @@ use crate::files;
 use crate::frame_info::{FrameInfo};
 use crate::{SpriteType, Error};
 
-pub fn import_frames_grp(
+pub fn import_frames_grp<F: Fn(f32)>(
     files: &mut files::Files,
     frame_info: &FrameInfo,
     dir: &Path,
@@ -21,6 +21,7 @@ pub fn import_frames_grp(
     format: anim::TextureFormat,
     sprite: usize,
     scale: u8,
+    report_progress: F,
 ) -> Result<(), Error> {
     let mut frames = Vec::new();
     let mut reader = FrameReader::new(dir.into());
@@ -37,6 +38,7 @@ pub fn import_frames_grp(
             size: data.len() as u32,
             offset: !0,
         }, data));
+        report_progress((i + 1) as f32 / frame_info.frame_count as f32);
     }
     files.set_grp_changes(sprite, frames, scale);
     Ok(())
@@ -185,7 +187,7 @@ impl FrameReader {
     }
 }
 
-pub fn import_frames(
+pub fn import_frames<F: Fn(f32)>(
     files: &mut files::Files,
     frame_info: &FrameInfo,
     hd2_frame_info: Option<&FrameInfo>,
@@ -196,16 +198,20 @@ pub fn import_frames(
     formats: &[anim::TextureFormat],
     sprite: usize,
     ty: SpriteType,
+    report_progress: F,
 ) -> Result<(), Error> {
-    fn add_layers(
+    fn add_layers<F: Fn(f32)>(
         layout: &mut anim_encoder::Layout,
         frame_info: &FrameInfo,
         dir: &Path,
         first_layer: usize,
         frame_scale: f32,
         scale: u32,
+        report_progress: F,
     ) -> Result<(), Error> {
         let mut frame_reader = FrameReader::new(dir.into());
+        let mut step = 1.0;
+        let step_count = frame_info.layers.len() as f32 * frame_info.frame_count as f32;
         for &(i, _) in &frame_info.layers {
             let layer = first_layer + i as usize;
             for f in 0..frame_info.frame_count {
@@ -219,6 +225,8 @@ pub fn import_frames(
                 bounded.coords.width *= scale;
                 bounded.coords.height *= scale;
                 layout.add_frame(layer, f as usize, bounded.data, bounded.coords);
+                report_progress(step / step_count);
+                step += 1.0;
             }
         }
         Ok(())
@@ -231,9 +239,29 @@ pub fn import_frames(
 
     let layer_count = formats.len();
     let mut layout = anim_encoder::Layout::new();
-    add_layers(&mut layout, frame_info, dir, 0, frame_scale, 1)?;
+    let progress_mul = match hd2_frame_info.is_some() {
+        true => 0.5,
+        false => 1.0,
+    };
+    add_layers(
+        &mut layout,
+        frame_info,
+        dir,
+        0,
+        frame_scale,
+        1,
+        |step| report_progress(step * progress_mul),
+    )?;
     if let Some((hd2, dir)) = hd2_frame_info {
-        add_layers(&mut layout, hd2, dir, layer_count, hd2_frame_scale.unwrap_or(1.0), 2)?;
+        add_layers(
+            &mut layout,
+            hd2,
+            dir,
+            layer_count,
+            hd2_frame_scale.unwrap_or(1.0),
+            2,
+            |step| report_progress(0.5 + step * 0.5),
+        )?;
     }
     let layout_result = layout.layout();
 

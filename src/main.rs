@@ -37,7 +37,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::rc::Rc;
 
@@ -132,7 +132,7 @@ fn main() {
 }
 
 struct State {
-    files: Rc<RefCell<files::Files>>,
+    files: Arc<Mutex<files::Files>>,
 }
 
 struct Ui {
@@ -146,7 +146,7 @@ thread_local! {
     static UI: RefCell<Option<Rc<Ui>>> = RefCell::new(None);
     static CSS: gtk::CssProvider = init_css_provider();
     static STATE: RefCell<State> = RefCell::new(State {
-        files: Rc::new(RefCell::new(files::Files::empty())),
+        files: Arc::new(Mutex::new(files::Files::empty())),
     });
 }
 
@@ -610,7 +610,7 @@ fn sprite_render_program(gl: &mut gl::Context) -> glium::program::Program {
 pub struct SpriteInfo {
     bx: gtk::Box,
     file_list: gtk::TextBuffer,
-    files: Rc<RefCell<files::Files>>,
+    files: Arc<Mutex<files::Files>>,
     sprite_actions: gio::SimpleActionGroup,
     sprite_index: AtomicUsize,
     selected_layer: AtomicUsize,
@@ -625,7 +625,7 @@ fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::S
 }
 
 impl SpriteInfo {
-    fn new(file_shared: Rc<RefCell<files::Files>>) -> Arc<SpriteInfo> {
+    fn new(file_shared: Arc<Mutex<files::Files>>) -> Arc<SpriteInfo> {
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let sprite_actions = gio::SimpleActionGroup::new();
         bx.insert_action_group("sprite", Some(&sprite_actions));
@@ -750,8 +750,13 @@ impl SpriteInfo {
     fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
         use crate::ui_helpers::*;
 
+        enum Progress {
+            Done(Result<(), Error>),
+            Progress(f32),
+        }
+
         let tex_id = this.tex_id();
-        let mut files = match this.files.try_borrow_mut() {
+        let mut files = match this.files.try_lock() {
             Ok(o) => o,
             _ => return,
         };
@@ -845,7 +850,7 @@ impl SpriteInfo {
         let framedef_name = if is_anim {
             format!("frames_{:03}_{}.json", tex_id.0, type_lowercase)
         } else {
-            format!("frames_{}_{}.json", grp_prefix_text, type_lowercase)
+            format!("frames_{}.json", grp_prefix_text)
         };
         framedef_entry.set_text(&framedef_name);
         let framedef_bx = label_section("Write miscellaneous frame info to..", &framedef_frame);
@@ -860,14 +865,23 @@ impl SpriteInfo {
         let s = this.clone();
         let w = window.clone();
         let single_image_check2 = single_image_check.clone();
+        let progress = gtk::ProgressBar::new();
+        let progress2 = progress.clone();
+        let waiting_for_thread = Rc::new(Cell::new(false));
+        let waiting_for_thread2 = waiting_for_thread.clone();
+        let rest_of_ui: Rc<RefCell<Vec<gtk::Box>>> = Rc::new(RefCell::new(Vec::new()));
+        let rest_of_ui2 = rest_of_ui.clone();
         ok_button.connect_clicked(move |_| {
+            if waiting_for_thread.get() {
+                return;
+            }
             let path: PathBuf = match dir_select.text() {
                 Some(s) => s.into(),
                 None => return,
             };
 
             let tex_id = s.tex_id();
-            let mut files = match s.files.try_borrow_mut() {
+            let mut files = match s.files.try_lock() {
                 Ok(o) => o,
                 _ => return,
             };
@@ -876,71 +890,124 @@ impl SpriteInfo {
                 _ => return,
             };
 
-            let layers_to_export;
             let framedef: PathBuf = match framedef_entry.get_text() {
                 Some(s) => String::from(s).into(),
                 None => return,
             };
-            let result = if is_anim {
-                layers_to_export = checkboxes.iter().map(|(check, entry)| {
+            let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
+            let files_arc = s.files.clone();
+            let frame_count;
+            let path2 = path.clone();
+            if is_anim {
+                let layers_to_export = checkboxes.iter().map(|(check, entry)| {
                     if check.get_active() {
                         Some(entry.get_text().map(|x| x.into()).unwrap_or_else(|| String::new()))
                     } else {
                         None
                     }
                 }).collect::<Vec<_>>();
+                frame_count = layers_to_export.iter().filter(|x| x.is_some()).count() *
+                    file.frames().map(|x| x.len()).unwrap_or(0);
                 let single_image = single_image_check2.get_active();
-                frame_export::export_frames(
-                    &file,
-                    tex_id.1,
-                    &path,
-                    &framedef,
-                    &layers_to_export,
-                    single_image,
-                )
+                std::thread::spawn(move || {
+                    let mut files = files_arc.lock().unwrap();
+                    let file = match files.file(tex_id.0, tex_id.1) {
+                        Ok(Some(o)) => o,
+                        _ => return,
+                    };
+
+                    let result = frame_export::export_frames(
+                        &file,
+                        tex_id.1,
+                        &path2,
+                        &framedef,
+                        &layers_to_export,
+                        single_image,
+                        |step| send.send(Progress::Progress(step)).unwrap(),
+                    );
+                    let _ = send.send(Progress::Done(result));
+                });
             } else {
                 let prefix = grp_prefix.as_ref()
                     .and_then(|x| x.get_text())
                     .map(|x| x.into())
                     .unwrap_or_else(String::new);
-                layers_to_export = Vec::new();
+                frame_count = file.layer_count();
                 let single_image = single_image_check2.get_active();
-                frame_export::export_grp(&file, &path, &prefix, &framedef, single_image)
-            };
-            match result {
-                Ok(()) => {
-                    let frame_count = if is_anim {
-                        layers_to_export.iter().filter(|x| x.is_some()).count() *
-                        file.frames().map(|x| x.len()).unwrap_or(0)
-                    } else {
-                        file.layer_count()
+                std::thread::spawn(move || {
+                    let mut files = files_arc.lock().unwrap();
+                    let file = match files.file(tex_id.0, tex_id.1) {
+                        Ok(Some(o)) => o,
+                        _ => return,
                     };
-                    let msg =
-                        format!("Wrote {} frames to {}", frame_count, path.to_string_lossy());
-                    info_msg_box(&w, &msg);
-                    w.destroy();
-                }
-                Err(e) => {
-                    use std::fmt::Write;
-                    let mut msg = format!("Unable to export frames:\n");
-                    for c in e.iter_chain() {
-                        writeln!(msg, "{}", c).unwrap();
+
+                    let result = frame_export::export_grp(
+                        &file,
+                        &path2,
+                        &prefix,
+                        &framedef,
+                        single_image,
+                        |step| send.send(Progress::Progress(step)).unwrap(),
+                    );
+                    let _ = send.send(Progress::Done(result));
+                });
+            }
+            let rest_of_ui = rest_of_ui2.clone();
+            let window = w.clone();
+            let progress = progress2.clone();
+            waiting_for_thread.set(true);
+            for part in rest_of_ui.borrow().iter() {
+                part.set_sensitive(false);
+            }
+            let waiting_for_thread = waiting_for_thread.clone();
+            recv.attach(None, move |status| match status {
+                Progress::Done(result) => {
+                    waiting_for_thread.set(false);
+                    for part in rest_of_ui.borrow().iter() {
+                        part.set_sensitive(true);
                     }
-                    // Remove last newline
-                    msg.pop();
-                    error_msg_box(&w, &msg);
+                    match result {
+                        Ok(()) => {
+                            let msg = format!(
+                                "Wrote {} frames to {}",
+                                frame_count, path.to_string_lossy(),
+                            );
+                            info_msg_box(&window, &msg);
+                            window.destroy();
+                        }
+                        Err(e) => {
+                            use std::fmt::Write;
+                            let mut msg = format!("Unable to export frames:\n");
+                            for c in e.iter_chain() {
+                                writeln!(msg, "{}", c).unwrap();
+                            }
+                            // Remove last newline
+                            msg.pop();
+                            error_msg_box(&window, &msg);
+                        }
+                    }
+                    glib::Continue(false)
                 }
-            };
+                Progress::Progress(step) => {
+                    progress.set_fraction(step as f64);
+                    glib::Continue(true)
+                }
+            });
         });
         button_bx.pack_end(&cancel_button, false, false, 0);
         button_bx.pack_end(&ok_button, false, false, 0);
-        let bx = box_vertical(&[
+        let rest_bx = box_vertical(&[
             &filename_bx,
             &framedef_bx,
             single_image_check.widget(),
             &layers_bx,
+        ]);
+        let bx = box_vertical(&[
+            &rest_bx,
+            &progress,
             &button_bx,
         ]);
+        *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
         window.add(&bx);
         window.set_border_width(10);
         window.set_property_default_width(350);
@@ -951,6 +1018,9 @@ impl SpriteInfo {
                 window.set_title(&format!("Export frames of {}", filename.to_string_lossy()));
             }
         }
+        window.connect_delete_event(move |_, _| {
+            Inhibit(waiting_for_thread2.get())
+        });
         window.set_modal(true);
         window.set_transient_for(Some(parent));
         window.show_all();
@@ -1018,7 +1088,10 @@ impl SpriteInfo {
 
         buf.clear_color(0.0, 0.0, 0.0, 1.0);
         let tex_id = self.tex_id();
-        let mut files = self.files.try_borrow_mut()?;
+        let mut files = match self.files.try_lock() {
+            Ok(o) => o,
+            Err(_) => return Ok(()),
+        };
         let mut file = match files.file(tex_id.0, tex_id.1)? {
             Some(s) => s,
             None => return Ok(()),
@@ -1156,7 +1229,7 @@ impl SpriteInfo {
                 s.selected_layer.store(layer as usize, Ordering::SeqCst);
                 {
                     let tex_id = s.tex_id();
-                    let mut files = match s.files.try_borrow_mut() {
+                    let mut files = match s.files.try_lock() {
                         Ok(o) => o,
                         _ => return,
                     };
@@ -1235,7 +1308,7 @@ impl SpriteInfo {
                 warn!("Changing ref for non-sd sprite");
                 return;
             }
-            let mut files = match self.files.try_borrow_mut() {
+            let mut files = match self.files.try_lock() {
                 Ok(o) => o,
                 _ => return,
             };
@@ -1262,7 +1335,7 @@ impl SpriteInfo {
                 warn!("Changing ref for non-sd sprite");
                 return;
             }
-            let mut files = match self.files.try_borrow_mut() {
+            let mut files = match self.files.try_lock() {
                 Ok(o) => o,
                 _ => return,
             };
@@ -1286,7 +1359,7 @@ impl SpriteInfo {
         let dirty;
         {
             let tex_id = self.tex_id();
-            let mut files = match self.files.try_borrow_mut() {
+            let mut files = match self.files.try_lock() {
                 Ok(o) => o,
                 _ => return,
             };
@@ -1300,7 +1373,7 @@ impl SpriteInfo {
 
     fn changed_type_from_event(&self) {
         let tex_id = self.tex_id();
-        let mut files = match self.files.try_borrow_mut() {
+        let mut files = match self.files.try_lock() {
             Ok(o) => o,
             _ => return,
         };
@@ -1424,7 +1497,7 @@ impl SpriteInfo {
     fn select_sprite(&self, index: usize) {
         let has_mainsd;
         let sprite = {
-            let mut files = match self.files.try_borrow_mut() {
+            let mut files = match self.files.try_lock() {
                 Ok(o) => o,
                 _ => return,
             };
@@ -1464,7 +1537,7 @@ impl SpriteInfo {
             }
         }
         let tex_id = self.tex_id();
-        let mut files = match self.files.try_borrow_mut() {
+        let mut files = match self.files.try_lock() {
             Ok(o) => o,
             _ => return,
         };
@@ -1542,7 +1615,7 @@ fn save() -> Result<(), Error> {
         state.files.clone()
     });
     let result = {
-        let mut files = files.borrow_mut();
+        let mut files = files.lock().unwrap();
         files.save()
     };
     if let Err(ref e) = result {
@@ -1570,7 +1643,7 @@ fn check_unsaved_files() -> bool {
             let state = x.borrow();
             state.files.clone()
         });
-        let files = files.borrow();
+        let files = files.lock().unwrap();
         files.has_changes()
     };
     if has_changes {
@@ -1673,7 +1746,7 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
                 let state = x.borrow();
                 state.files.clone()
             });
-            let mut files = files.borrow_mut();
+            let mut files = files.lock().unwrap();
             let mut out = std::io::BufWriter::new(File::create("frames.txt").unwrap());
             for i in 0..files.sprites().len() {
                 if let Some(file) = files.file(i, SpriteType::Sd).unwrap() {
@@ -1714,7 +1787,7 @@ fn open(filename: &Path) {
             {
                 STATE.with(|x| {
                     let state = x.borrow();
-                    let mut files = state.files.borrow_mut();
+                    let mut files = state.files.lock().unwrap();
                     *files = f;
                 });
             }
@@ -1822,7 +1895,7 @@ fn create_ui(app: &gtk::Application) -> Ui {
     info.on_dirty_update(move |dirty| {
         STATE.with(|x| {
             let state = x.borrow();
-            let files = state.files.borrow();
+            let files = state.files.lock().unwrap();
             w.set_title(&title(files.root_path(), dirty));
         });
     });
