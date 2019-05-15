@@ -148,8 +148,8 @@ pub fn import_frames(
         _ => 1,
     };
     let alignment = match ty {
-        SpriteType::Hd => 32,
-        SpriteType::Hd2 => 16,
+        SpriteType::Hd => 8,
+        SpriteType::Hd2 => 4,
         SpriteType::Sd => 4,
     };
     let align = |val: u16| {

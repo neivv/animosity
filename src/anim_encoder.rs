@@ -222,7 +222,7 @@ impl Layout {
         // Place tallest frames first
         layout_order.sort_by_key(|x| x.1.height);
 
-        layout_frames(layout_order, 32, frame_count)
+        layout_frames(layout_order, 8, frame_count)
     }
 }
 
