@@ -1,6 +1,7 @@
 use gtk;
 use gtk::prelude::*;
 
+#[derive(Clone)]
 pub struct ComboBoxEnum<E: Copy + Clone + Eq + PartialEq + 'static> {
     combo_box: gtk::ComboBoxText,
     cases: &'static [(E, &'static str)],
@@ -38,5 +39,12 @@ impl<E: Copy + Clone + Eq + PartialEq + 'static> ComboBoxEnum<E> {
 
     pub fn set_sensitive(&self, yes: bool) {
         self.combo_box.set_sensitive(yes)
+    }
+
+    pub fn connect_changed<F: Fn(Option<E>) + 'static>(&self, cb: F) {
+        let this = self.clone();
+        self.combo_box.connect_changed(move |_| {
+            cb(this.get_active())
+        });
     }
 }

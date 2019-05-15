@@ -1,8 +1,10 @@
 use std::convert::TryFrom;
 use std::fs::File;
+use std::io::BufReader;
 use std::path::Path;
 
 use failure::ResultExt;
+use image::{GenericImageView, ImageFormat};
 
 use crate::anim;
 use crate::anim_encoder;
@@ -15,38 +17,40 @@ pub fn import_frames_grp(
     files: &mut files::Files,
     dir: &Path,
     filename_prefix: &str,
+    frame_scale: f32,
     format: anim::TextureFormat,
     sprite: usize,
     scale: u8,
 ) -> Result<u32, Error> {
-    use png::HasParameters;
-
     let mut frame_count = 0;
     let mut frames = Vec::new();
     for i in 0.. {
-        let path = dir.join(format!("{}_{:03}.png", filename_prefix, i));
+        let path = &dir.join(format!("{}_{:03}.png", filename_prefix, i));
         if !path.is_file() {
             frame_count = i;
             break;
         }
 
-        let file = File::open(&path)
+        let file = File::open(path)
             .with_context(|_| format!("Unable to open {}", path.to_string_lossy()))?;
-        let mut decoder = png::Decoder::new(file);
-        decoder.set(png::Transformations::IDENTITY);
-        let (info, mut reader) = decoder.read_info()
-            .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
-        let mut buf = vec![0; info.buffer_size()];
-        reader.next_frame(&mut buf)
-            .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
-        let buf = arbitrary_png_to_rgba(buf, &info)
-            .with_context(|_| format!("Unsupported PNG {}", path.to_string_lossy()))?;
-        let data = anim_encoder::encode(&buf, info.width, info.height, format);
+        let image = image::load(BufReader::new(file), ImageFormat::PNG)
+            .with_context(|_| format!("Unable to load PNG {}", path.to_string_lossy()))?;
+        let buffer = if frame_scale != 1.0 {
+            let new_width = (image.width() as f32 * frame_scale) as u32;
+            let new_height = (image.height() as f32 * frame_scale) as u32;
+            image::imageops::resize(&image, new_width, new_height, image::FilterType::Lanczos3)
+        } else {
+            image.to_rgba()
+        };
+
+        let (width, height) = buffer.dimensions();
+        let data = buffer.into_raw();
+        let data = anim_encoder::encode(&data, width, height, format);
         frames.push((ddsgrp::Frame {
             unknown: 0,
-            width: u16::try_from(info.width)
+            width: u16::try_from(width)
                 .map_err(|_| format_err!("Frame {} width too large", i))?,
-            height: u16::try_from(info.height)
+            height: u16::try_from(height)
                 .map_err(|_| format_err!("Frame {} width too large", i))?,
             size: data.len() as u32,
             offset: !0,
@@ -62,6 +66,8 @@ pub fn import_frames(
     hd2_frame_info: Option<&FrameInfo>,
     dir: &Path,
     hd2_dir: Option<&Path>,
+    frame_scale: f32,
+    hd2_frame_scale: Option<f32>,
     formats: &[anim::TextureFormat],
     sprite: usize,
     ty: SpriteType,
@@ -71,24 +77,33 @@ pub fn import_frames(
         frame_info: &FrameInfo,
         dir: &Path,
         first_layer: usize,
+        frame_scale: f32,
         scale: u32,
     ) -> Result<(), Error> {
         for &(i, ref layer_prefix) in &frame_info.layers {
             let layer = first_layer + i as usize;
             for f in 0..frame_info.frame_count {
-                let path = dir.join(format!("{}_{:03}.png", layer_prefix, f));
-                let file = File::open(&path)
+                let path = &dir.join(format!("{}_{:03}.png", layer_prefix, f));
+
+                let file = File::open(path)
                     .with_context(|_| format!("Unable to open {}", path.to_string_lossy()))?;
-                let mut decoder = png::Decoder::new(file);
-                decoder.set(png::Transformations::IDENTITY);
-                let (info, mut reader) = decoder.read_info()
-                    .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
-                let mut buf = vec![0; info.buffer_size()];
-                reader.next_frame(&mut buf)
-                    .with_context(|_| format!("Unable to read {}", path.to_string_lossy()))?;
-                let buf = arbitrary_png_to_rgba(buf, &info)
-                    .with_context(|_| format!("Unsupported PNG {}", path.to_string_lossy()))?;
-                let mut bounded = rgba_bounding_box(&buf, info.width, info.height);
+                let image = image::load(BufReader::new(file), ImageFormat::PNG)
+                    .with_context(|_| format!("Unable to load PNG {}", path.to_string_lossy()))?;
+                let buffer = if frame_scale != 1.0 {
+                    let new_width = (image.width() as f32 * frame_scale) as u32;
+                    let new_height = (image.height() as f32 * frame_scale) as u32;
+                    image::imageops::resize(
+                        &image,
+                        new_width,
+                        new_height,
+                        image::FilterType::Lanczos3,
+                    )
+                } else {
+                    image.to_rgba()
+                };
+                let (width, height) = buffer.dimensions();
+                let data = buffer.into_raw();
+                let mut bounded = rgba_bounding_box(&data, width, height);
                 bounded.coords.x_offset =
                     bounded.coords.x_offset.saturating_add(frame_info.offset_x) * scale as i32;
                 bounded.coords.y_offset =
@@ -101,8 +116,6 @@ pub fn import_frames(
         Ok(())
     }
 
-    use png::HasParameters;
-
     let hd2_frame_info = match (hd2_frame_info, hd2_dir) {
         (Some(a), Some(b)) => Some((a, b)),
         _ => None,
@@ -110,9 +123,9 @@ pub fn import_frames(
 
     let layer_count = formats.len();
     let mut layout = anim_encoder::Layout::new();
-    add_layers(&mut layout, frame_info, dir, 0, 1)?;
+    add_layers(&mut layout, frame_info, dir, 0, frame_scale, 1)?;
     if let Some((hd2, dir)) = hd2_frame_info {
-        add_layers(&mut layout, hd2, dir, layer_count, 2)?;
+        add_layers(&mut layout, hd2, dir, layer_count, hd2_frame_scale.unwrap_or(1.0), 2)?;
     }
     let layout_result = layout.layout();
 
@@ -266,53 +279,4 @@ fn test_rgba_bounding_box() {
 struct Bounded {
     data: Vec<u8>,
     coords: anim_encoder::FrameCoords,
-}
-
-fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>, Error> {
-    if info.bit_depth != png::BitDepth::Eight {
-        return Err(format_err!("Bit depth {:?} not supported", info.bit_depth));
-    }
-    match info.color_type {
-        png::ColorType::RGBA => Ok(buf),
-        png::ColorType::RGB => {
-            if buf.len() != (info.width * info.height) as usize * 3 {
-                return Err(format_err!("RGB buffer size isn't 3 * w * h?"));
-            }
-            let mut out = vec![0; (info.width * info.height) as usize * 4];
-            for (out, input) in out.chunks_mut(4).zip(buf.chunks(3)) {
-                out[0] = input[0];
-                out[1] = input[1];
-                out[2] = input[2];
-                out[3] = 0xff;
-            }
-            Ok(out)
-        }
-        png::ColorType::Grayscale => {
-            if buf.len() != (info.width * info.height) as usize {
-                return Err(format_err!("Grayscale buffer size isn't w * h?"));
-            }
-            let mut out = vec![0; (info.width * info.height) as usize * 4];
-            for (out, input) in out.chunks_mut(4).zip(buf.chunks(1)) {
-                out[0] = input[0];
-                out[1] = input[0];
-                out[2] = input[0];
-                out[3] = 0xff;
-            }
-            Ok(out)
-        }
-        png::ColorType::GrayscaleAlpha => {
-            if buf.len() != (info.width * info.height) as usize * 2 {
-                return Err(format_err!("Grayscale + alpha buffer size isn't 2 * w * h?"));
-            }
-            let mut out = vec![0; (info.width * info.height) as usize * 4];
-            for (out, input) in out.chunks_mut(4).zip(buf.chunks(2)) {
-                out[0] = input[0];
-                out[1] = input[0];
-                out[2] = input[0];
-                out[3] = input[1];
-            }
-            Ok(out)
-        }
-        _ => Err(format_err!("Unsupported color type {:?}", info.color_type)),
-    }
 }

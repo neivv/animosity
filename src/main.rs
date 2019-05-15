@@ -12,6 +12,7 @@ extern crate gio;
 extern crate glib;
 #[macro_use] extern crate glium;
 extern crate gtk;
+extern crate image;
 #[macro_use] extern crate log;
 extern crate png;
 #[macro_use] extern crate serde_derive;
@@ -29,6 +30,7 @@ mod int_entry;
 mod files;
 mod select_dir;
 mod shaders;
+#[allow(dead_code)] mod ui_helpers;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};

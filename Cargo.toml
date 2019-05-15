@@ -3,6 +3,10 @@ name = "animosity"
 version = "0.1.9"
 authors = ["Markus Heikkinen <ittevien@gmail.com>"]
 
+[profile.dev]
+debug = 1
+opt-level = 2
+
 [profile.release]
 debug = 1
 overflow-checks = true
@@ -20,6 +24,7 @@ gdk = "0.10"
 gio = "0.6"
 glib = "0.7"
 glium = "0.24"
+image = { version = "0.21.1", features = ["png_codec"], default-features = false }
 log = "0.4"
 png = "0.14"
 serde = "1.0.37"    

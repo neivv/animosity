@@ -12,8 +12,10 @@ use crate::combo_box_enum::ComboBoxEnum;
 use crate::frame_import;
 use crate::frame_info::{FrameInfo, parse_frame_info};
 use crate::int_entry::{IntSize, IntEntry};
-use crate::select_dir;
+use crate::select_dir::{self, read_config_entry, set_config_entry};
 use crate::{label_section, lookup_action, error_msg_box, info_msg_box, SpriteInfo, SpriteType};
+
+use crate::ui_helpers::*;
 
 pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
     let tex_id = sprite_info.tex_id();
@@ -50,24 +52,37 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         false
     };
 
+    let sprite_type_str = match tex_id.1 {
+        SpriteType::Hd => "hd",
+        SpriteType::Hd2 => "hd2",
+        SpriteType::Sd => "sd",
+    };
+
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
 
     let mut framedef_filename = None;
     let framedef_status = gtk::Label::new(None);
     framedef_status.set_halign(gtk::Align::Start);
     let framedef;
+    let framedef_scale;
+
     let mut hd2_framedef_filename = None;
     let mut hd2_framedef = None;
     let mut hd2_framedef_bx = None;
     let hd2_framedef_status = gtk::Label::new(None);
     hd2_framedef_status.set_halign(gtk::Align::Start);
+    let hd2_scale = ScaleChooser::new("import_scale_hd2");
+
     let framedef_bx = if is_anim {
         framedef = Rc::new(
             select_dir::SelectFile::new(&window, "import_frames", "Text files", "*.json")
         );
-        let framedef_inner_bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        framedef_inner_bx.pack_start(&framedef.widget(), false, false, 0);
-        framedef_inner_bx.pack_start(&framedef_status, false, false, 5);
+        framedef_scale = ScaleChooser::new(format!("import_scale_{}", sprite_type_str));
+        let framedef_inner_bx = box_vertical(&[
+            &framedef.widget(),
+            framedef_scale.widget(),
+            &framedef_status,
+        ]);
         framedef_filename = framedef.text().and_then(|x| match x.is_empty() {
             true => None,
             false => Some(x),
@@ -76,9 +91,11 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             let hd2_framedef_ = Rc::new(select_dir::SelectFile::new(
                 &window, "import_frames_hd2", "Text files", "*.json"
             ));
-            let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            bx.pack_start(&hd2_framedef_.widget(), false, false, 0);
-            bx.pack_start(&hd2_framedef_status, false, false, 5);
+            let bx = box_vertical(&[
+                &hd2_framedef_.widget(),
+                hd2_scale.widget(),
+                &hd2_framedef_status,
+            ]);
             hd2_framedef_filename = hd2_framedef_.text().and_then(|x| match x.is_empty() {
                 true => None,
                 false => Some(x),
@@ -93,8 +110,11 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         framedef = Rc::new(
             select_dir::SelectFile::new(&window, "import_frames_grp", "PNG files", "*.png")
         );
-        let inner_bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        inner_bx.pack_start(&framedef.widget(), false, false, 0);
+        framedef_scale = ScaleChooser::new(format!("import_scale_grp_{}", sprite_type_str));
+        let inner_bx = box_vertical(&[
+            &framedef.widget(),
+            framedef_scale.widget(),
+        ]);
         label_section("First frame", &inner_bx)
     };
 
@@ -144,7 +164,15 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     } else {
         let entry = IntEntry::new(IntSize::Int8);
         entry.set_value(grp_scale.unwrap_or(0).into());
-        grp_scale_bx = Some(label_section("Scale", &entry.frame));
+        let labeled = label_section("Ingame scale", &entry.frame);
+        labeled.set_tooltip_text("\
+            Selects the scale value saved within file.\n\
+            Generally the correct setting is to use 1 for SD, 2 for HD2, and 4 for HD,\n\
+            which should be what this value gets set automatically anyway.\n\
+            \n\
+            (It is mainly visible to let you fix any issues if the file happened to have wrong \
+            values in the first place)");
+        grp_scale_bx = Some(labeled);
         grp_scale_entry = Some(entry);
     };
 
@@ -226,6 +254,24 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 None => return,
             };
             let hd2_fi = hd2_fi.borrow();
+            let frame_scale = match framedef_scale.get_active() {
+                Some(s) => s.to_float(),
+                None => {
+                    error_msg_box(&w, "Scale not set");
+                    return;
+                }
+            };
+            let hd2_scale = if hd2_fi.is_some() {
+                match hd2_scale.get_active() {
+                    Some(s) => Some(s.to_float()),
+                    None => {
+                        error_msg_box(&w, "HD2 Scale not set");
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
 
             let result = frame_import::import_frames(
                 &mut files,
@@ -233,6 +279,8 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 hd2_fi.as_ref(),
                 &dir,
                 hd2_dir.as_ref().map(|x| &**x),
+                frame_scale,
+                hd2_scale,
                 &formats,
                 tex_id.0,
                 tex_id.1,
@@ -260,10 +308,18 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 }
             };
             let scale = grp_scale_entry.as_ref().unwrap().get_value() as u8;
+            let frame_scale = match framedef_scale.get_active() {
+                Some(s) => s.to_float(),
+                None => {
+                    error_msg_box(&w, "Scale not set");
+                    return;
+                }
+            };
             let result = frame_import::import_frames_grp(
                 &mut files,
                 &dir,
                 &filename_prefix,
+                frame_scale,
                 format,
                 tex_id.0,
                 scale,
@@ -395,4 +451,79 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     window.set_modal(true);
     window.set_transient_for(Some(parent));
     window.show_all();
+}
+
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
+enum ScaleValue {
+    Scale1,
+    Scale050,
+    Scale025,
+    Scale2,
+    Scale4,
+}
+
+impl ScaleValue {
+    fn to_float(self) -> f32 {
+        use self::ScaleValue::*;
+        match self {
+            Scale1 => 1.0,
+            Scale050 => 0.5,
+            Scale025 => 0.25,
+            Scale2 => 2.0,
+            Scale4 => 4.0,
+        }
+    }
+}
+
+struct ScaleChooser {
+    bx: gtk::Box,
+    combo_box: ComboBoxEnum<ScaleValue>,
+}
+
+impl ScaleChooser {
+    fn new<S: Into<String>>(config_cache: S) -> ScaleChooser {
+        use self::ScaleValue::*;
+        static SCALES: &[(ScaleValue, &str)] = &[
+            (Scale1, "1x"),
+            (Scale050, "0.50x"),
+            (Scale025, "0.25x"),
+            (Scale2, "2x"),
+            (Scale4, "4x"),
+        ];
+        let combo_box = ComboBoxEnum::new(SCALES);
+        let config_cache = config_cache.into();
+        let cached_value = read_config_entry(&config_cache)
+            .and_then(|x| serde_json::from_str(&x).ok());
+        if let Some(value) = cached_value {
+            combo_box.set_active(&value)
+        } else {
+            combo_box.set_active(&ScaleValue::Scale1);
+        }
+        combo_box.connect_changed(move |new| {
+            if let Some(new) = new {
+                if let Ok(new) = serde_json::to_string(&new) {
+                    set_config_entry(&config_cache, &new);
+                }
+            }
+        });
+        let bx = label_section("Scale", combo_box.widget());
+        bx.set_tooltip_text("\
+            Down/upscales the PNG frames. 1x for no change.\n\
+            \n\
+            E.g.\n\
+            To import HD-resolution frames to HD2, set scale to 0.50x,\n\
+            to import SD-resolution frames to HD, set scale to 4x.");
+        ScaleChooser {
+            bx,
+            combo_box,
+        }
+    }
+
+    pub fn widget(&self) -> &gtk::Widget {
+        self.bx.upcast_ref()
+    }
+
+    fn get_active(&self) -> Option<ScaleValue> {
+        self.combo_box.get_active()
+    }
 }
