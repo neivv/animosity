@@ -22,6 +22,7 @@ mod anim;
 mod anim_encoder;
 mod combo_box_enum;
 mod ddsgrp;
+mod frame_export;
 mod frame_import;
 mod frame_import_dialog;
 mod frame_info;
@@ -34,7 +35,6 @@ mod shaders;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::convert::TryFrom;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -46,7 +46,7 @@ use gtk::prelude::*;
 
 use cgmath::conv::array4x4;
 use cgmath::{Matrix4, vec4};
-use failure::{Error, ResultExt};
+use failure::{Error};
 use glium::backend::glutin::headless::Headless;
 use glium::framebuffer::SimpleFrameBuffer;
 use glium::index::{IndexBuffer, PrimitiveType};
@@ -54,7 +54,6 @@ use glium::texture::{self, Texture2d};
 use glium::vertex::VertexBuffer;
 
 use files::SpriteFiles;
-use frame_info::{FrameInfo, FrameType};
 use int_entry::{IntEntry, IntSize};
 
 fn init_log() -> Result<(), fern::InitError> {
@@ -749,6 +748,8 @@ impl SpriteInfo {
     }
 
     fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
+        use crate::ui_helpers::*;
+
         let tex_id = this.tex_id();
         let mut files = match this.files.try_borrow_mut() {
             Ok(o) => o,
@@ -761,7 +762,6 @@ impl SpriteInfo {
         let layer_names = file.layer_names();
 
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
-        let bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
 
         let dir_select = select_dir::SelectDir::new(&window, "export_frames");
         let filename_bx = label_section("Output directory", &dir_select.widget());
@@ -772,18 +772,16 @@ impl SpriteInfo {
             SpriteType::Hd2 => "hd2",
         };
 
-        let framedef_bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let framedef_label = gtk::Label::new(Some("Write miscellaneous frame info to.."));
-        let (framedef_entry, framedef_frame) = int_entry::entry();
-        let framedef_name = format!("frames_{:03}_{}.json", tex_id.0, type_lowercase);
-        framedef_entry.set_text(&framedef_name);
-        framedef_label.set_halign(gtk::Align::Start);
-        framedef_bx.pack_start(&framedef_label, false, false, 0);
-        framedef_bx.pack_start(&framedef_frame, true, true, 0);
+        let is_anim = file.is_anim();
+        let single_image_check = if is_anim {
+            SavedCheckbox::new("frame_export_single_image", "One image per layer")
+        } else {
+            SavedCheckbox::new("frame_export_single_image", "One image")
+        };
 
         let mut checkboxes = Vec::with_capacity(layer_names.len());
         let mut grp_prefix = None;
-        let is_anim = file.is_anim();
+        let mut grp_prefix_text = String::new();
         let layers_bx = if is_anim {
             let grid = gtk::Grid::new();
             grid.set_column_spacing(5);
@@ -838,9 +836,19 @@ impl SpriteInfo {
                 None => "Unk".into(),
             };
             entry.set_text(&prefix);
+            grp_prefix_text = prefix.into();
             grp_prefix = Some(entry.clone());
             label_section("Filename prefix", &frame)
         };
+
+        let (framedef_entry, framedef_frame) = int_entry::entry();
+        let framedef_name = if is_anim {
+            format!("frames_{:03}_{}.json", tex_id.0, type_lowercase)
+        } else {
+            format!("frames_{}_{}.json", grp_prefix_text, type_lowercase)
+        };
+        framedef_entry.set_text(&framedef_name);
+        let framedef_bx = label_section("Write miscellaneous frame info to..", &framedef_frame);
 
         let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
         let ok_button = gtk::Button::new_with_label("Export");
@@ -851,6 +859,7 @@ impl SpriteInfo {
         });
         let s = this.clone();
         let w = window.clone();
+        let single_image_check2 = single_image_check.clone();
         ok_button.connect_clicked(move |_| {
             let path: PathBuf = match dir_select.text() {
                 Some(s) => s.into(),
@@ -868,12 +877,11 @@ impl SpriteInfo {
             };
 
             let layers_to_export;
+            let framedef: PathBuf = match framedef_entry.get_text() {
+                Some(s) => String::from(s).into(),
+                None => return,
+            };
             let result = if is_anim {
-                let framedef: PathBuf = match framedef_entry.get_text() {
-                    Some(s) => String::from(s).into(),
-                    None => return,
-                };
-
                 layers_to_export = checkboxes.iter().map(|(check, entry)| {
                     if check.get_active() {
                         Some(entry.get_text().map(|x| x.into()).unwrap_or_else(|| String::new()))
@@ -881,14 +889,23 @@ impl SpriteInfo {
                         None
                     }
                 }).collect::<Vec<_>>();
-                export_frames(&file, tex_id.1, &path, &framedef, &layers_to_export)
+                let single_image = single_image_check2.get_active();
+                frame_export::export_frames(
+                    &file,
+                    tex_id.1,
+                    &path,
+                    &framedef,
+                    &layers_to_export,
+                    single_image,
+                )
             } else {
                 let prefix = grp_prefix.as_ref()
                     .and_then(|x| x.get_text())
                     .map(|x| x.into())
                     .unwrap_or_else(String::new);
                 layers_to_export = Vec::new();
-                export_grp(&file, &path, &prefix)
+                let single_image = single_image_check2.get_active();
+                frame_export::export_grp(&file, &path, &prefix, &framedef, single_image)
             };
             match result {
                 Ok(()) => {
@@ -917,12 +934,13 @@ impl SpriteInfo {
         });
         button_bx.pack_end(&cancel_button, false, false, 0);
         button_bx.pack_end(&ok_button, false, false, 0);
-        bx.pack_start(&filename_bx, false, false, 0);
-        if is_anim {
-            bx.pack_start(&framedef_bx, false, false, 0);
-        }
-        bx.pack_start(&layers_bx, false, false, 0);
-        bx.pack_start(&button_bx, false, false, 0);
+        let bx = box_vertical(&[
+            &filename_bx,
+            &framedef_bx,
+            single_image_check.widget(),
+            &layers_bx,
+            &button_bx,
+        ]);
         window.add(&bx);
         window.set_border_width(10);
         window.set_property_default_width(350);
@@ -1822,152 +1840,6 @@ fn create_ui(app: &gtk::Application) -> Ui {
     }
 }
 
-fn export_grp(file: &files::File, path: &Path, prefix: &str) -> Result<(), Error> {
-    use std::io::BufWriter;
-
-    use png::HasParameters;
-
-    if !path.is_dir() {
-        return Err(format_err!("{} is not a directory", path.to_string_lossy()));
-    }
-
-    for i in 0..file.layer_count() {
-        let texture = file.texture(i)?;
-
-        let path = path.join(format!("{}_{:03}.png", prefix, i));
-        let out = File::create(&path)
-            .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
-        let mut out = BufWriter::new(out);
-
-        let mut encoder = png::Encoder::new(out, texture.width, texture.height);
-        encoder.set(png::ColorType::RGBA);
-        let mut encoder = encoder.write_header()?;
-        encoder.write_image_data(&texture.data)?;
-    }
-
-    Ok(())
-}
-
-// Won't export layers with None prefix,
-// framedef_file is joined to path, as are the image names
-fn export_frames(
-    file: &files::File,
-    ty: SpriteType,
-    path: &Path,
-    framedef_file: &Path,
-    layer_prefixes: &[Option<String>],
-) -> Result<(), Error> {
-    use std::io::BufWriter;
-
-    use png::HasParameters;
-
-    if !path.is_dir() {
-        return Err(format_err!("{} is not a directory", path.to_string_lossy()));
-    }
-
-    let scale_div = match ty {
-        SpriteType::Hd2 => 2u32,
-        _ => 1u32,
-    };
-
-    let frames = file.frames().ok_or_else(|| format_err!("Unable to get frames"))?;
-    let values = match file.sprite_values() {
-        Some(s) => s,
-        None => return Err(format_err!("Couldn't get sprite values")),
-    };
-    let enum_prefixes =
-        layer_prefixes.iter().enumerate().flat_map(|(i, x)| x.as_ref().map(|x| (i, x)));
-    let x_base =
-        frames.iter().map(|x| i32::from(x.x_off)).min().unwrap_or(0).min(0i32) / scale_div as i32;
-    let y_base =
-        frames.iter().map(|x| i32::from(x.y_off)).min().unwrap_or(0).min(0i32) / scale_div as i32;
-    let x_max = frames.iter().map(|x| (i32::from(x.x_off) + i32::from(x.width)) / scale_div as i32)
-        .max().unwrap_or(1);
-    let y_max = frames.iter().map(|x| (i32::from(x.y_off) + i32::from(x.height)) / scale_div as i32)
-        .max().unwrap_or(1);
-    let out_width = (x_max.max(i32::from(values.width) / scale_div as i32) - x_base) as u32;
-    let out_height = (y_max.max(i32::from(values.height) / scale_div as i32) - y_base) as u32;
-    for (i, prefix) in enum_prefixes {
-        let texture = file.texture(i)?;
-        for (n, frame) in frames.iter().enumerate() {
-            let path = path.join(format!("{}_{:03}.png", prefix, n));
-            let out = File::create(&path)
-                .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
-            let mut out = BufWriter::new(out);
-
-            let tex_x = frame.tex_x / scale_div as u16;
-            let tex_y = frame.tex_y / scale_div as u16;
-            let frame_width = u32::from(frame.width) / scale_div;
-            let frame_height = u32::from(frame.height) / scale_div;
-
-            let blank_left = u32::try_from(frame.x_off as i32 / scale_div as i32 - x_base)?;
-            let blank_top = u32::try_from(frame.y_off as i32 / scale_div as i32 - y_base)?;
-            let blank_right = out_width - (blank_left + frame_width);
-            let blank_bottom = out_height - (blank_top + frame_height);
-
-            let mut bytes = Vec::with_capacity((out_width * out_height * 4) as usize);
-            bytes.extend((0..blank_top * out_width).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
-            for row in 0..(out_height - blank_top - blank_bottom) {
-                let tex_start = (
-                    (tex_y as u32 + row) * texture.width + tex_x as u32
-                ) as usize * 4;
-                let image_row = texture.data.get(tex_start..tex_start + frame_width as usize * 4);
-                let image_row = match image_row {
-                    Some(s) => s,
-                    None => return Err(format_err!("Bad frame data for frame {}", n)),
-                };
-                bytes.extend((0..blank_left).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
-                bytes.extend_from_slice(image_row);
-                bytes.extend((0..blank_right).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
-            }
-            bytes.extend(
-                (0..blank_bottom * out_width).flat_map(|_| [0, 0, 0, 0].iter().cloned())
-            );
-
-            let mut encoder = png::Encoder::new(out, out_width, out_height);
-            encoder.set(png::ColorType::RGBA);
-            let mut encoder = encoder.write_header()?;
-            encoder.write_image_data(&bytes)?;
-        }
-    }
-
-    let mut frame_info_file = File::create(&path.join(framedef_file))
-        .context("Can't create the frame info file")?;
-    let mut frame_info = FrameInfo {
-        frame_count: frames.len() as u32,
-        offset_x: x_base,
-        offset_y: y_base,
-        layers: layer_prefixes.iter().enumerate()
-            .filter_map(|(i, l)| l.as_ref().map(|x| (i, x)))
-            .map(|(i, prefix)| (i as u32, prefix.clone()))
-            .collect(),
-        frame_types: Vec::new(),
-    };
-    let mut start = 0;
-    let mut first_unk = frames.get(0).map(|x| x.unknown).unwrap_or(0);
-    for (i, f) in frames.iter().enumerate() {
-        if f.unknown != first_unk {
-            frame_info.frame_types.push(FrameType {
-                first_frame: start as u32,
-                last_frame: i as u32,
-                frame_type: first_unk,
-            });
-            start = i + 1;
-            first_unk = frames.get(start).map(|x| x.unknown).unwrap_or(0);
-        }
-    }
-    if start < frames.len() {
-        frame_info.frame_types.push(FrameType {
-            first_frame: start as u32,
-            last_frame: frames.len() as u32 - 1,
-            frame_type: first_unk,
-        });
-    }
-    serde_json::to_writer_pretty(&mut frame_info_file, &frame_info)?;
-
-    Ok(())
-}
-
 fn label_section<O: IsA<gtk::Widget>>(name: &str, obj: &O) -> gtk::Box {
     let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let label = gtk::Label::new(Some(name));
@@ -1999,4 +1871,39 @@ fn error_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
     );
     dialog.run();
     dialog.destroy();
+}
+
+#[derive(Clone)]
+struct SavedCheckbox {
+    check: gtk::CheckButton,
+}
+
+impl SavedCheckbox {
+    pub fn new<S: Into<String>>(save_entry: S, label: &str) -> SavedCheckbox {
+        let check = gtk::CheckButton::new_with_label(label);
+        let save_entry = save_entry.into();
+        if select_dir::read_config_entry(&save_entry).map(|x| x == "y").unwrap_or(false) {
+            check.set_active(true);
+        } else {
+            check.set_active(false);
+        }
+        check.connect_toggled(move |check| {
+            let state = match check.get_active() {
+                true => "y",
+                false => "n",
+            };
+            select_dir::set_config_entry(&save_entry, state);
+        });
+        SavedCheckbox {
+            check,
+        }
+    }
+
+    pub fn widget(&self) -> &gtk::Widget {
+        self.check.upcast_ref()
+    }
+
+    pub fn get_active(&self) -> bool {
+        self.check.get_active()
+    }
 }

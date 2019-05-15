@@ -1,10 +1,10 @@
 use std::convert::TryFrom;
 use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
 
 use failure::ResultExt;
-use image::{GenericImageView, ImageFormat};
+use image::{GenericImageView, RgbaImage};
 
 use crate::anim;
 use crate::anim_encoder;
@@ -15,36 +15,18 @@ use crate::{SpriteType, Error};
 
 pub fn import_frames_grp(
     files: &mut files::Files,
+    frame_info: &FrameInfo,
     dir: &Path,
-    filename_prefix: &str,
     frame_scale: f32,
     format: anim::TextureFormat,
     sprite: usize,
     scale: u8,
-) -> Result<u32, Error> {
-    let mut frame_count = 0;
+) -> Result<(), Error> {
     let mut frames = Vec::new();
-    for i in 0.. {
-        let path = &dir.join(format!("{}_{:03}.png", filename_prefix, i));
-        if !path.is_file() {
-            frame_count = i;
-            break;
-        }
-
-        let file = File::open(path)
-            .with_context(|_| format!("Unable to open {}", path.to_string_lossy()))?;
-        let image = image::load(BufReader::new(file), ImageFormat::PNG)
-            .with_context(|_| format!("Unable to load PNG {}", path.to_string_lossy()))?;
-        let buffer = if frame_scale != 1.0 {
-            let new_width = (image.width() as f32 * frame_scale) as u32;
-            let new_height = (image.height() as f32 * frame_scale) as u32;
-            image::imageops::resize(&image, new_width, new_height, image::FilterType::Lanczos3)
-        } else {
-            image.to_rgba()
-        };
-
-        let (width, height) = buffer.dimensions();
-        let data = buffer.into_raw();
+    let mut reader = FrameReader::new(dir.into());
+    for i in 0..frame_info.frame_count {
+        let (data, width, height) = reader.read_frame(frame_info, 0, i, frame_scale)
+            .with_context(|_| format!("Reading frame {}", i))?;
         let data = anim_encoder::encode(&data, width, height, format);
         frames.push((ddsgrp::Frame {
             unknown: 0,
@@ -57,7 +39,150 @@ pub fn import_frames_grp(
         }, data));
     }
     files.set_grp_changes(sprite, frames, scale);
-    Ok(frame_count)
+    Ok(())
+}
+
+struct FrameReader {
+    dir: PathBuf,
+    current_file: Option<(RgbaImage, PathBuf)>,
+}
+
+fn load_png<R: Read>(reader: BufReader<R>) -> Result<RgbaImage, Error> {
+    let decoder = png::Decoder::new_with_limits(reader, png::Limits {
+        pixels: 1 << 28, // HD wirefram is over the default limit (1 << 26)
+    });
+    let (info, mut reader) = decoder.read_info()?;
+    let mut buf = vec![0; info.buffer_size()];
+    reader.next_frame(&mut buf)?;
+    let rgba = arbitrary_png_to_rgba(buf, &info)?;
+    image::ImageBuffer::from_raw(info.width, info.height, rgba)
+        .ok_or_else(|| format_err!("Couldn't create image from raw bytes"))
+}
+
+fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>, Error> {
+    if info.bit_depth != png::BitDepth::Eight {
+        return Err(format_err!("Bit depth {:?} not supported", info.bit_depth));
+    }
+    match info.color_type {
+        png::ColorType::RGBA => Ok(buf),
+        png::ColorType::RGB => {
+            if buf.len() != (info.width * info.height) as usize * 3 {
+                return Err(format_err!("RGB buffer size isn't 3 * w * h?"));
+            }
+            let mut out = vec![0; (info.width * info.height) as usize * 4];
+            for (out, input) in out.chunks_mut(4).zip(buf.chunks(3)) {
+                out[0] = input[0];
+                out[1] = input[1];
+                out[2] = input[2];
+                out[3] = 0xff;
+            }
+            Ok(out)
+        }
+        png::ColorType::Grayscale => {
+            if buf.len() != (info.width * info.height) as usize {
+                return Err(format_err!("Grayscale buffer size isn't w * h?"));
+            }
+            let mut out = vec![0; (info.width * info.height) as usize * 4];
+            for (out, input) in out.chunks_mut(4).zip(buf.chunks(1)) {
+                out[0] = input[0];
+                out[1] = input[0];
+                out[2] = input[0];
+                out[3] = 0xff;
+            }
+            Ok(out)
+        }
+        png::ColorType::GrayscaleAlpha => {
+            if buf.len() != (info.width * info.height) as usize * 2 {
+                return Err(format_err!("Grayscale + alpha buffer size isn't 2 * w * h?"));
+            }
+            let mut out = vec![0; (info.width * info.height) as usize * 4];
+            for (out, input) in out.chunks_mut(4).zip(buf.chunks(2)) {
+                out[0] = input[0];
+                out[1] = input[0];
+                out[2] = input[0];
+                out[3] = input[1];
+            }
+            Ok(out)
+        }
+        _ => Err(format_err!("Unsupported color type {:?}", info.color_type)),
+    }
+}
+
+impl FrameReader {
+    fn new(dir: PathBuf) -> FrameReader {
+        FrameReader {
+            dir,
+            current_file: None,
+        }
+    }
+
+    fn read_frame(
+        &mut self,
+        frame_info: &FrameInfo,
+        layer: u32,
+        frame: u32,
+        frame_scale: f32,
+    ) -> Result<(Vec<u8>, u32, u32), Error> {
+        let layer_prefix = frame_info.layers.iter()
+            .find(|x| x.0 == layer)
+            .map(|x| &x.1)
+            .ok_or_else(|| format_err!("No layer {}", layer))?;
+        let multi_frame_image = frame_info.multi_frame_images.iter()
+            .filter(|x| x.layer == layer)
+            .find(|x| frame >= x.first_frame && frame < x.first_frame + x.frame_count);
+        let filename = if let Some(multi_frame) = multi_frame_image {
+            (&multi_frame.path).into()
+        } else {
+            self.dir.join(format!("{}_{:03}.png", layer_prefix, frame))
+        };
+        let cached_file_ok = match self.current_file {
+            Some((_, ref mut path)) => *path == filename,
+            None => false,
+        };
+        if !cached_file_ok {
+            let file = File::open(&filename)
+                .with_context(|_| format!("Unable to open {}", filename.to_string_lossy()))?;
+            let image = load_png(BufReader::new(file))
+                .with_context(|_| format!("Unable to load PNG {}", filename.to_string_lossy()))?;
+            self.current_file = Some((image, filename));
+        }
+        let image = self.current_file.as_mut().map(|x| &mut x.0).unwrap();
+        let frame_view = if let Some(multi_frame) = multi_frame_image {
+            let index = frame - multi_frame.first_frame;
+            let frames_per_row = image.width() / multi_frame.frame_width;
+            if frames_per_row * multi_frame.frame_width != image.width() {
+                return Err(format_err!(
+                    "Image width {} not multiple of frame width {}",
+                    image.width(), multi_frame.frame_width,
+                ));
+            }
+            let x = (index % frames_per_row) * multi_frame.frame_width;
+            let y = (index / frames_per_row) * multi_frame.frame_height;
+            let (width, height) = match multi_frame.frame_size_overrides.get(&frame) {
+                Some(&s) => s,
+                None => (multi_frame.frame_width, multi_frame.frame_height),
+            };
+            image.view(x, y, width, height)
+        } else {
+            image.view(0, 0, image.width(), image.height())
+        }.to_image();
+
+        let buffer = if frame_scale != 1.0 {
+            let new_width = (frame_view.width() as f32 * frame_scale) as u32;
+            let new_height = (frame_view.height() as f32 * frame_scale) as u32;
+            image::imageops::resize(
+                &frame_view,
+                new_width,
+                new_height,
+                image::FilterType::Lanczos3,
+            )
+        } else {
+            frame_view
+        };
+        let (width, height) = buffer.dimensions();
+        let data = buffer.into_raw();
+        Ok((data, width, height))
+    }
 }
 
 pub fn import_frames(
@@ -80,29 +205,12 @@ pub fn import_frames(
         frame_scale: f32,
         scale: u32,
     ) -> Result<(), Error> {
-        for &(i, ref layer_prefix) in &frame_info.layers {
+        let mut frame_reader = FrameReader::new(dir.into());
+        for &(i, _) in &frame_info.layers {
             let layer = first_layer + i as usize;
             for f in 0..frame_info.frame_count {
-                let path = &dir.join(format!("{}_{:03}.png", layer_prefix, f));
-
-                let file = File::open(path)
-                    .with_context(|_| format!("Unable to open {}", path.to_string_lossy()))?;
-                let image = image::load(BufReader::new(file), ImageFormat::PNG)
-                    .with_context(|_| format!("Unable to load PNG {}", path.to_string_lossy()))?;
-                let buffer = if frame_scale != 1.0 {
-                    let new_width = (image.width() as f32 * frame_scale) as u32;
-                    let new_height = (image.height() as f32 * frame_scale) as u32;
-                    image::imageops::resize(
-                        &image,
-                        new_width,
-                        new_height,
-                        image::FilterType::Lanczos3,
-                    )
-                } else {
-                    image.to_rgba()
-                };
-                let (width, height) = buffer.dimensions();
-                let data = buffer.into_raw();
+                let (data, width, height) =
+                    frame_reader.read_frame(frame_info, i, f, frame_scale)?;
                 let mut bounded = rgba_bounding_box(&data, width, height);
                 bounded.coords.x_offset =
                     bounded.coords.x_offset.saturating_add(frame_info.offset_x) * scale as i32;

@@ -108,14 +108,15 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         }
     } else {
         framedef = Rc::new(
-            select_dir::SelectFile::new(&window, "import_frames_grp", "PNG files", "*.png")
+            select_dir::SelectFile::new(&window, "import_grp_frames", "Text files", "*.json")
         );
         framedef_scale = ScaleChooser::new(format!("import_scale_grp_{}", sprite_type_str));
         let inner_bx = box_vertical(&[
             &framedef.widget(),
             framedef_scale.widget(),
+            &framedef_status,
         ]);
-        label_section("First frame", &inner_bx)
+        label_section("Frame info file", &inner_bx)
     };
 
     let mut checkboxes = Vec::with_capacity(layer_names.len());
@@ -178,7 +179,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
 
     let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
     let ok_button = gtk::Button::new_with_label("Import");
-    ok_button.set_sensitive(!is_anim);
+    ok_button.set_sensitive(true);
     let cancel_button = gtk::Button::new_with_label("Cancel");
     let w = window.clone();
     cancel_button.connect_clicked(move |_| {
@@ -196,20 +197,9 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let checkboxes2 = checkboxes.clone();
     ok_button.connect_clicked(move |_| {
         // Used for grps
-        let filename_prefix;
         let dir = match fi_entry.text() {
             Some(s) => {
                 let mut buf: PathBuf = s.into();
-                filename_prefix = match buf.file_name() {
-                    Some(s) => {
-                        let text = s.to_string_lossy();
-                        match text.find("_000.") {
-                            Some(s) => Some((&text[..s]).to_string()),
-                            None => None,
-                        }
-                    }
-                    None => None,
-                };
                 buf.pop();
                 if !buf.is_dir() {
                     return;
@@ -228,6 +218,11 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             }
         });
         let mut files = sprite_info.files.borrow_mut();
+        let fi = fi.borrow();
+        let frame_info = match *fi {
+            Some(ref s) => s,
+            None => return,
+        };
         let result = if is_anim {
             let formats = checkboxes2.iter().map(|x| {
                 Ok(match x.1.get_active() {
@@ -247,11 +242,6 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     error_msg_box(&w, "Format not specified for every layer");
                     return;
                 }
-            };
-            let fi = fi.borrow();
-            let frame_info = match *fi {
-                Some(ref s) => s,
-                None => return,
             };
             let hd2_fi = hd2_fi.borrow();
             let frame_scale = match framedef_scale.get_active() {
@@ -300,13 +290,6 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     return;
                 }
             };
-            let filename_prefix = match filename_prefix {
-                Some(o) => o,
-                None => {
-                    error_msg_box(&w, "Invalid first frame filename");
-                    return;
-                }
-            };
             let scale = grp_scale_entry.as_ref().unwrap().get_value() as u8;
             let frame_scale = match framedef_scale.get_active() {
                 Some(s) => s.to_float(),
@@ -317,14 +300,14 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             };
             let result = frame_import::import_frames_grp(
                 &mut files,
+                frame_info,
                 &dir,
-                &filename_prefix,
                 frame_scale,
                 format,
                 tex_id.0,
                 scale,
             );
-            result
+            result.map(|()| frame_info.frame_count)
         };
         match result {
             Ok(frame_count) => {
@@ -355,75 +338,73 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     });
 
     let ok = ok_button.clone();
-    if is_anim {
-        // The second entry is used for hd2
-        let framedef_set = Rc::new(move |filename: &str, hd2: bool, status: &gtk::Label| {
-            match parse_frame_info(Path::new(filename)) {
-                Ok(o) => {
-                    ok.set_sensitive(true);
-                    for &(ref check, ref format) in checkboxes.iter() {
-                        check.set_active(false);
-                        format.set_sensitive(false);
-                        format.clear_active();
-                    }
-                    for &(i, _) in &o.layers {
-                        if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
-                            check.set_active(true);
-                            format.set_sensitive(true);
-                            let tex_f = tex_formats.get(i as usize)
-                                .and_then(|x| x.as_ref().ok())
-                                .and_then(|x| x.as_ref());
-                            if let Some(tex_f) = tex_f {
-                                format.set_active(tex_f);
-                            }
+    // The second entry is used for hd2
+    let framedef_set = Rc::new(move |filename: &str, hd2: bool, status: &gtk::Label| {
+        match parse_frame_info(Path::new(filename)) {
+            Ok(o) => {
+                ok.set_sensitive(true);
+                for &(ref check, ref format) in checkboxes.iter() {
+                    check.set_active(false);
+                    format.set_sensitive(false);
+                    format.clear_active();
+                }
+                for &(i, _) in &o.layers {
+                    if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
+                        check.set_active(true);
+                        format.set_sensitive(true);
+                        let tex_f = tex_formats.get(i as usize)
+                            .and_then(|x| x.as_ref().ok())
+                            .and_then(|x| x.as_ref());
+                        if let Some(tex_f) = tex_f {
+                            format.set_active(tex_f);
                         }
                     }
-                    if hd2 {
-                        *hd2_frame_info.borrow_mut() = Some(o);
-                    } else {
-                        *frame_info.borrow_mut() = Some(o);
-                    }
-                    status.set_text("");
                 }
-                Err(e) => {
-                    ok.set_sensitive(false);
-                    for &(ref check, ref format) in checkboxes.iter() {
-                        check.set_active(false);
-                        format.set_sensitive(false);
-                        format.clear_active();
-                    }
-                    let mut msg = format!("Frame info invalid:\n");
-                    for c in e.iter_chain() {
-                        use std::fmt::Write;
-                        writeln!(msg, "{}", c).unwrap();
-                    }
-                    // Remove last newline
-                    msg.pop();
-                    if hd2 {
-                        *hd2_frame_info.borrow_mut() = None;
-                    } else {
-                        *frame_info.borrow_mut() = None;
-                    }
-                    status.set_text(&msg);
+                if hd2 {
+                    *hd2_frame_info.borrow_mut() = Some(o);
+                } else {
+                    *frame_info.borrow_mut() = Some(o);
                 }
+                status.set_text("");
             }
-        });
-        if let Some(filename) = framedef_filename {
-            framedef_set(&filename, false, &framedef_status);
+            Err(e) => {
+                ok.set_sensitive(false);
+                for &(ref check, ref format) in checkboxes.iter() {
+                    check.set_active(false);
+                    format.set_sensitive(false);
+                    format.clear_active();
+                }
+                let mut msg = format!("Frame info invalid:\n");
+                for c in e.iter_chain() {
+                    use std::fmt::Write;
+                    writeln!(msg, "{}", c).unwrap();
+                }
+                // Remove last newline
+                msg.pop();
+                if hd2 {
+                    *hd2_frame_info.borrow_mut() = None;
+                } else {
+                    *frame_info.borrow_mut() = None;
+                }
+                status.set_text(&msg);
+            }
         }
+    });
+    if let Some(filename) = framedef_filename {
+        framedef_set(&filename, false, &framedef_status);
+    }
+    let fun = framedef_set.clone();
+    framedef.on_change(move |filename| {
+        fun(filename, false, &framedef_status);
+    });
+    if let Some(filename) = hd2_framedef_filename {
+        framedef_set(&filename, true, &hd2_framedef_status);
+    }
+    if let Some(ref fdef) = hd2_framedef {
         let fun = framedef_set.clone();
-        framedef.on_change(move |filename| {
-            fun(filename, false, &framedef_status);
+        fdef.on_change(move |filename| {
+            fun(filename, true, &hd2_framedef_status);
         });
-        if let Some(filename) = hd2_framedef_filename {
-            framedef_set(&filename, true, &hd2_framedef_status);
-        }
-        if let Some(ref fdef) = hd2_framedef {
-            let fun = framedef_set.clone();
-            fdef.on_change(move |filename| {
-                fun(filename, true, &hd2_framedef_status);
-            });
-        }
     }
 
     button_bx.pack_end(&cancel_button, false, false, 0);
