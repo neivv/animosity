@@ -8,7 +8,8 @@ use crate::anim;
 use crate::anim_encoder;
 use crate::ddsgrp;
 use crate::files;
-use crate::{FrameInfo, SpriteType, Error};
+use crate::frame_info::{FrameInfo};
+use crate::{SpriteType, Error};
 
 pub fn import_frames_grp(
     files: &mut files::Files,
