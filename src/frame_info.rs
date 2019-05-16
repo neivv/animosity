@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
+use serde_derive::{Serialize, Deserialize};
+
 use crate::Error;
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -4,14 +4,14 @@ use std::sync::Mutex;
 use byteorder::{ReadBytesExt, LE, WriteBytesExt};
 use failure::Error;
 
-use anim;
+use crate::anim;
 
 pub struct DdsGrp {
     pub frame_count: u16,
     pub scale: u8,
     pub version: u8,
     pub frames: Vec<Frame>,
-    read: Mutex<Box<ReadSeek>>,
+    read: Mutex<Box<dyn ReadSeek>>,
 }
 
 trait ReadSeek: Read + Seek + Send { }

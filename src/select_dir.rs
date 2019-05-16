@@ -11,7 +11,7 @@ use gtk;
 
 use gtk::prelude::*;
 
-use int_entry;
+use crate::int_entry;
 
 const APP_INFO: AppInfo = AppInfo {
     name: "Animosity",
@@ -69,7 +69,7 @@ pub struct SelectDir {
 pub struct SelectFile {
     pub entry: gtk::Entry,
     pub bx: gtk::Box,
-    on_change_handlers: Rc<RefCell<Vec<Box<FnMut(&str) + 'static>>>>,
+    on_change_handlers: Rc<RefCell<Vec<Box<dyn FnMut(&str) + 'static>>>>,
 }
 
 fn create_common() -> (gtk::Box, gtk::Entry, gtk::Button) {
@@ -137,7 +137,7 @@ impl SelectFile {
             entry.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
         }
 
-        let on_change_handlers: Rc<RefCell<Vec<Box<FnMut(&str) + 'static>>>> =
+        let on_change_handlers: Rc<RefCell<Vec<Box<dyn FnMut(&str) + 'static>>>> =
             Rc::new(RefCell::new(Vec::new()));
         let e = entry.clone();
         let w = window.clone();

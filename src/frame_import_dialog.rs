@@ -6,6 +6,7 @@ use std::sync::Arc;
 use gio::prelude::*;
 use gtk;
 use gtk::prelude::*;
+use serde_derive::{Serialize, Deserialize};
 
 use crate::anim;
 use crate::combo_box_enum::ComboBoxEnum;

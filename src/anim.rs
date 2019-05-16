@@ -12,7 +12,7 @@ pub struct Anim {
     sprites: Vec<SpriteType>,
     scale: u8,
     unknown: u16,
-    read: Mutex<Box<ReadSeek>>,
+    read: Mutex<Box<dyn ReadSeek>>,
 }
 
 trait ReadSeek: Read + Seek + Send { }

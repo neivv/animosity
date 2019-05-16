@@ -15,7 +15,7 @@ use crate::{SpriteType, Error};
 // Won't export layers with None prefix,
 // framedef_file is joined to path, as are the image names
 pub fn export_frames<F: Fn(f32)>(
-    file: &files::File,
+    file: &files::File<'_>,
     ty: SpriteType,
     path: &Path,
     framedef_file: &Path,
@@ -241,7 +241,7 @@ fn write_frame(
 }
 
 pub fn export_grp<F: Fn(f32)>(
-    file: &files::File,
+    file: &files::File<'_>,
     path: &Path,
     prefix: &str,
     framedef_file: &Path,
@@ -328,7 +328,7 @@ pub fn export_grp<F: Fn(f32)>(
             let path = path.join(format!("{}_{:03}.png", prefix, i));
             let out = File::create(&path)
                 .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
-            let mut out = BufWriter::new(out);
+            let out = BufWriter::new(out);
 
             let mut encoder = png::Encoder::new(out, texture.width, texture.height);
             encoder.set(png::ColorType::RGBA);

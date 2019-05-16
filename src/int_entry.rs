@@ -8,7 +8,7 @@ use gtk;
 use gio::prelude::*;
 use gtk::prelude::*;
 
-use ::lookup_action;
+use crate::lookup_action;
 
 pub struct IntEntry {
     pub entry: gtk::Entry,
@@ -43,7 +43,7 @@ pub fn entry() -> (gtk::Entry, gtk::Frame) {
     <_ as gtk::WidgetExt>::set_name(&frame, "entry_frame");
     frame.add(&entry);
     let style_ctx = frame.get_style_context();
-    let css = ::get_css_provider();
+    let css = crate::get_css_provider();
     style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
     (entry, frame)
 }

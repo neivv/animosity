@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use failure::{Error, ResultExt};
 
-use anim::{self, SpriteValues};
-use ddsgrp;
-use ::SpriteType;
+use crate::anim::{self, SpriteValues};
+use crate::ddsgrp;
+use crate::SpriteType;
 
 pub struct Files {
     sprites: Vec<SpriteFiles>,

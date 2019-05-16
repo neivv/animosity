@@ -3,9 +3,9 @@ use std::mem;
 use std::rc::Rc;
 
 use byteorder::{LE, WriteBytesExt};
-
-use anim;
 use ddsfile::{Dds, D3DFormat};
+
+use crate::anim;
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct Frame {
@@ -208,7 +208,7 @@ impl Layout {
                 height,
             };
 
-            let mut entry = final_map.entry(frames);
+            let entry = final_map.entry(frames);
             entry.or_insert_with(Default::default).push((f, FrameOffset {
                 x: base_x_offset,
                 y: base_y_offset,

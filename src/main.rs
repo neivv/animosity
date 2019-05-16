@@ -1,22 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-extern crate app_dirs;
-extern crate byteorder;
-extern crate cairo;
-extern crate cgmath;
-extern crate ddsfile;
 #[macro_use] extern crate failure;
-extern crate fern;
-extern crate gdk;
-extern crate gio;
-extern crate glib;
 #[macro_use] extern crate glium;
-extern crate gtk;
-extern crate image;
 #[macro_use] extern crate log;
-extern crate png;
-#[macro_use] extern crate serde_derive;
-extern crate serde_json;
 
 mod anim;
 mod anim_encoder;
@@ -53,8 +39,8 @@ use glium::index::{IndexBuffer, PrimitiveType};
 use glium::texture::{self, Texture2d};
 use glium::vertex::VertexBuffer;
 
-use files::SpriteFiles;
-use int_entry::{IntEntry, IntSize};
+use crate::files::SpriteFiles;
+use crate::int_entry::{IntEntry, IntSize};
 
 fn init_log() -> Result<(), fern::InitError> {
     if cfg!(debug_assertions) {
@@ -164,7 +150,7 @@ impl Ui {
     fn files_changed(&self, files: &files::Files) {
         self.list.list.clear();
         for sprite in files.sprites() {
-            let name: Cow<str> = match *sprite {
+            let name: Cow<'_, str> = match *sprite {
                 SpriteFiles::AnimSet(ref s) => (&*s.name).into(),
                 SpriteFiles::DdsGrp(_) => "(File)".into(),
                 SpriteFiles::MainSdOnly { ref name, .. } => (&**name).into(),
@@ -1047,7 +1033,7 @@ impl SpriteInfo {
         &self,
         facade: &Headless,
         cached_textures: &'a mut Vec<(Texture2d, TextureId)>,
-        cache_file: &mut files::File,
+        cache_file: &mut files::File<'_>,
     ) -> Result<Option<&'a Texture2d>, Error> {
         let tex_id = self.tex_id();
         let cached = cached_textures.iter().position(|x| x.1 == tex_id);
@@ -1078,7 +1064,7 @@ impl SpriteInfo {
 
     fn render_sprite(
         &self,
-        buf: &mut SimpleFrameBuffer,
+        buf: &mut SimpleFrameBuffer<'_>,
         facade: &Headless,
         draw_params: &mut DrawParams,
         (buf_width, buf_height): (u32, u32),
@@ -1384,7 +1370,7 @@ impl SpriteInfo {
         self.changed_ty(tex_id, &mut file);
     }
 
-    fn update_tex_size(&self, file: &mut files::File) {
+    fn update_tex_size(&self, file: &mut files::File<'_>) {
         let tex_id = self.tex_id();
         let variant = {
             let tex_sizes = file.texture_size(tex_id.2);
@@ -1397,7 +1383,7 @@ impl SpriteInfo {
         self.sprite_actions.activate_action("texture_size", Some(&variant));
     }
 
-    fn changed_ty(&self, tex_id: TextureId, file: &mut Option<files::File>) {
+    fn changed_ty(&self, tex_id: TextureId, file: &mut Option<files::File<'_>>) {
         let ty = tex_id.1;
         self.set_layers(file);
         if let Some(ref mut file) = *file {
@@ -1452,7 +1438,7 @@ impl SpriteInfo {
         }
     }
 
-    fn set_layers(&self, file: &Option<files::File>) {
+    fn set_layers(&self, file: &Option<files::File<'_>>) {
         let old_layer = self.selected_layer.load(Ordering::SeqCst);
         self.selector.list.clear();
         let layer_count;
@@ -1723,7 +1709,7 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
         action(app, "debug_dump_frames", true, move |_, _| {
             use std::io::Write;
 
-            fn write_frames<W: Write>(file: files::File, out: &mut W) -> Result<(), Error> {
+            fn write_frames<W: Write>(file: files::File<'_>, out: &mut W) -> Result<(), Error> {
                 if let Some(i) = file.sprite_values() {
                     writeln!(
                         out,
@@ -1902,7 +1888,7 @@ fn create_ui(app: &gtk::Application) -> Ui {
     window.set_title(&title(None, false));
     window.resize(800, 600);
     let style_ctx = window.get_style_context();
-    let css = ::get_css_provider();
+    let css = crate::get_css_provider();
     style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
 
     Ui {

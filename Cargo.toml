@@ -2,6 +2,7 @@
 name = "animosity"
 version = "0.2.0"
 authors = ["Markus Heikkinen <ittevien@gmail.com>"]
+edition = "2018"
 
 [profile.dev]
 debug = 1

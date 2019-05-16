@@ -72,7 +72,7 @@ impl Context {
         &self.facade
     }
 
-    pub fn framebuf(&self) -> (SimpleFrameBuffer, &Headless) {
+    pub fn framebuf(&self) -> (SimpleFrameBuffer<'_>, &Headless) {
         (self.render_target.as_surface(), &self.facade)
     }
 
