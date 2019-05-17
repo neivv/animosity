@@ -1,11 +1,12 @@
 use std::convert::TryFrom;
+use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::iter;
-use std::sync::Mutex;
+use std::sync::{Mutex};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use ddsfile::{Dds, D3DFormat};
-use failure::{Error, ResultExt};
+use quick_error::quick_error;
 
 pub struct Anim {
     layer_names: Vec<String>,
@@ -76,24 +77,124 @@ pub enum TextureFormat {
     Monochrome,
 }
 
+quick_error! {
+    #[derive(Debug)]
+    pub enum ImageWriteError {
+        Io(e: io::Error) {
+            from()
+            description("I/O error")
+            display("I/O error: {}", e)
+        }
+        NoFrames {
+            description("No frames")
+        }
+        TextureDataRequired {
+            description("No texture data set")
+        }
+        OutputTooBig {
+            description("Output file too big")
+        }
+        InvalidRef(referenced: u32) {
+            description("Invalid image reference")
+            display("Referencing invalid image {}", referenced)
+        }
+    }
+}
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum ErrKind {
+        ImageWrite(image: u16, e: ImageWriteError) {
+            description("Image write error")
+            display("Error writing image {}: {}", image, e)
+        }
+        TextureReadError(image: u16, e: io::Error) {
+            description("Texture read error")
+            display("Couldn't read textures for image {}: {}", image, e)
+        }
+        TooManyLayers {
+            description("Too many layers")
+        }
+        Eof {
+            description("Reached end of input")
+        }
+        NoSpriteData {
+            description("Sprite does not exist")
+        }
+        NoLayer {
+            description("Layer does not exist")
+        }
+        NoFrame {
+            description("Frame does not exist")
+        }
+        Format(msg: String) {
+            description("Invalid data")
+            display("{}", msg)
+        }
+        Io(e: io::Error) {
+            from()
+            description("I/O error")
+            display("I/O error: {}", e)
+        }
+        Dds(ctx: &'static str, e: String) {
+            description("DDS error")
+            display("DDS error on {}: {}", ctx, e)
+        }
+        NoDxtFormat {
+            description("No DXT format in DDS")
+        }
+        UnsupportedDdsFormat(format: ddsfile::D3DFormat) {
+            description("Unsupported DDS format")
+            display("Unsupported DDS format {:?}", format)
+        }
+        UnknownTextureFormat(magic: u32) {
+            description("Unknown texture format")
+            display("Unknown texture format, magic {:08x}", magic)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Error(pub Box<ErrKind>);
+
+impl From<ErrKind> for Error {
+    fn from(ty: ErrKind) -> Error {
+        Error(Box::new(ty))
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Error {
+        Error(Box::new(ErrKind::Io(e)))
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for Error {}
+
 const ANIM_MAGIC: u32 = 0x4d494e41;
 
 impl Anim {
     pub fn read<R: Read + Seek + Send + 'static>(mut r: R) -> Result<Anim, Error> {
         let magic = r.read_u32::<LE>()?;
         if magic != ANIM_MAGIC {
-            return Err(format_err!("Incorrect magic {:08x}", magic));
+            return Err(ErrKind::Format(format!("Incorrect magic {:08x}", magic)).into());
         }
         let scale = r.read_u8()?;
         let ty = r.read_u8()?;
         let unknown = r.read_u16::<LE>()?;
         if ty != 0x1 && ty != 0x2 {
-            return Err(format_err!("Unknown type {:x}", ty));
+            return Err(ErrKind::Format(format!("Unknown type {:x}", ty)).into());
         }
         let layers = r.read_u16::<LE>()?;
         let entries = r.read_u16::<LE>()?;
         if ty != 1 && entries != 1 {
-            return Err(format_err!("Type {:x} with {} entries", ty, entries));
+            return Err(ErrKind::Format(format!("Type {:x} with {} entries", ty, entries)).into());
         }
         let mut layer_names = Vec::with_capacity(layers as usize);
         for i in 0..layers {
@@ -120,9 +221,9 @@ impl Anim {
             if frame_count == 0 {
                 let ref_id = r.read_u32::<LE>()?;
                 if ref_id > entries as u32 {
-                    return Err(
-                        format_err!("Image {:x} refers past entry amount to {:x}", i, ref_id)
-                    );
+                    return Err(ErrKind::Format(
+                        format!("Image {:x} refers past entry amount to {:x}", i, ref_id)
+                    ).into());
                 }
                 sprites.push(SpriteType::Ref(ref_id));
             } else {
@@ -131,7 +232,7 @@ impl Anim {
                 let height = r.read_u16::<LE>()?;
                 let frame_arr_offset = r.read_u32::<LE>()?;
                 let textures = read_textures(&mut r, layers as u32)
-                    .with_context(|_| format!("Invalid image {:x}", i))?;
+                    .map_err(|e| ErrKind::TextureReadError(i as u16, e))?;
                 r.seek(SeekFrom::Start(frame_arr_offset as u64))?;
                 let frames = read_frames(&mut r, frame_count)?;
                 sprites.push(SpriteType::Data(SpriteData {
@@ -183,7 +284,7 @@ impl Anim {
         out.write_u16::<LE>(layer_names.len() as u16)?;
         out.write_u16::<LE>(sprite_count)?;
         if layer_names.len() > 10 {
-            return Err(format_err!("Cannot have more than 10 layers, had {}", layer_names.len()));
+            return Err(ErrKind::TooManyLayers.into());
         }
         for name in layer_names.iter().map(|x| &**x).chain(iter::repeat("")).take(10) {
             let mut buf = [0u8; 0x20];
@@ -199,74 +300,98 @@ impl Anim {
         }
         let mut read = self.read.lock().unwrap();
         for i in 0..sprite_count {
-            let i = i as usize;
-            sprite_offsets[i] = u32::try_from(out.seek(SeekFrom::Current(0))?)
-                .map_err(|_| format_err!("Output file too big"))?;
+            sprite_offsets[i as usize] = u32::try_from(out.seek(SeekFrom::Current(0))?)
+                .map_err(|_| ErrKind::ImageWrite(i, ImageWriteError::OutputTooBig))?;
 
             let store;
-            let values = match data_changes.iter().find(|x| x.0 == i) {
+            let values = match data_changes.iter().find(|x| x.0 == i as usize) {
                 Some(&(_, ref vals)) => vals,
                 None => {
-                    store = values_or_ref_sd(&self.sprites, i);
+                    store = values_or_ref_sd(&self.sprites, i as usize);
                     &store
                 }
             };
-            match *values {
-                ValuesOrRef::Ref(img) => {
-                    if img >= sprite_count as u32 {
-                        return Err(format_err!("Image {} refers to invalid image {}", i, img));
-                    }
-                    out.write_u16::<LE>(0)?;
-                    out.write_u32::<LE>(img)?;
-                    for _ in 0..3 {
-                        out.write_u16::<LE>(0)?;
-                    }
-                }
-                ValuesOrRef::Values(ref values) => {
-                    let texture_changes = textures.iter().find(|x| x.0 == i).map(|x| &x.1);
-                    let frames = match texture_changes {
-                        Some(changes) => &changes.frames,
-                        None => match self.sprites[i] {
-                            SpriteType::Ref(_) => {
-                                return Err(format_err!("No texture to write for image {}", i));
-                            }
-                            SpriteType::Data(ref data) => &data.frames,
-                        },
-                    };
-                    if frames.len() == 0 {
-                        return Err(format_err!("Image {} has no frames", i));
-                    }
-                    out.write_u16::<LE>(frames.len() as u16)?;
-                    out.write_u16::<LE>(values.unk2)?;
-                    out.write_u16::<LE>(values.width)?;
-                    out.write_u16::<LE>(values.height)?;
-                    let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
-                    out.write_u32::<LE>(!0)?;
-                    if let Some(changes) = texture_changes {
-                        write_textures_patched(&mut out, changes, layer_names.len())?;
-                    } else {
-                        let textures = match self.sprites[i] {
-                            SpriteType::Ref(_) => {
-                                return Err(format_err!("No texture to write for image {}", i));
-                            }
-                            SpriteType::Data(ref data) => &data.textures,
-                        };
-                        write_textures_unchanged(&mut out, &mut *read, textures)?;
-                    }
-                    let frame_arr_offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
-                        .map_err(|_| format_err!("Output file too big"))?;
-                    write_frames(&mut out, frames)?;
-                    let cont_pos = out.seek(SeekFrom::Current(0))?;
-                    out.seek(SeekFrom::Start(frame_arr_offset_pos))?;
-                    out.write_u32::<LE>(frame_arr_offset)?;
-                    out.seek(SeekFrom::Start(cont_pos))?;
-                }
-            }
+            self.write_patched_image(
+                &mut out,
+                &mut read,
+                i,
+                sprite_count,
+                values,
+                textures,
+                layer_names.len(),
+            ).map_err(|e| ErrKind::ImageWrite(i, e))?;
         }
         if ty == 1 {
             out.seek(SeekFrom::Start(sprite_offset_pos))?;
             for &x in &sprite_offsets {
                 out.write_u32::<LE>(x)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Internal helper for write_patched
+    fn write_patched_image<W: Write + Seek>(
+        &self,
+        out: &mut W,
+        read: &mut Box<dyn ReadSeek>,
+        image_id: u16,
+        image_count: u16,
+        values: &ValuesOrRef,
+        textures: &[(usize, &TexChanges)],
+        texture_count: usize,
+    ) -> Result<(), ImageWriteError> {
+        match *values {
+            ValuesOrRef::Ref(img) => {
+                if img >= image_count as u32 {
+                    return Err(ImageWriteError::InvalidRef(img));
+                }
+                out.write_u16::<LE>(0)?;
+                out.write_u32::<LE>(img)?;
+                for _ in 0..3 {
+                    out.write_u16::<LE>(0)?;
+                }
+            }
+            ValuesOrRef::Values(ref values) => {
+                let texture_changes = textures.iter()
+                    .find(|x| x.0 == image_id as usize)
+                    .map(|x| &x.1);
+                let frames = match texture_changes {
+                    Some(changes) => &changes.frames,
+                    None => match self.sprites[image_id as usize] {
+                        SpriteType::Ref(_) => {
+                            return Err(ImageWriteError::TextureDataRequired);
+                        }
+                        SpriteType::Data(ref data) => &data.frames,
+                    },
+                };
+                if frames.len() == 0 {
+                    return Err(ImageWriteError::NoFrames);
+                }
+                out.write_u16::<LE>(frames.len() as u16)?;
+                out.write_u16::<LE>(values.unk2)?;
+                out.write_u16::<LE>(values.width)?;
+                out.write_u16::<LE>(values.height)?;
+                let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
+                out.write_u32::<LE>(!0)?;
+                if let Some(changes) = texture_changes {
+                    write_textures_patched(out, changes, texture_count)?;
+                } else {
+                    let textures = match self.sprites[image_id as usize] {
+                        SpriteType::Ref(_) => {
+                            return Err(ImageWriteError::TextureDataRequired);
+                        }
+                        SpriteType::Data(ref data) => &data.textures,
+                    };
+                    write_textures_unchanged(out, &mut *read, textures)?;
+                }
+                let frame_arr_offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
+                    .map_err(|_| ImageWriteError::OutputTooBig)?;
+                write_frames(out, frames)?;
+                let cont_pos = out.seek(SeekFrom::Current(0))?;
+                out.seek(SeekFrom::Start(frame_arr_offset_pos))?;
+                out.write_u32::<LE>(frame_arr_offset)?;
+                out.seek(SeekFrom::Start(cont_pos))?;
             }
         }
         Ok(())
@@ -303,9 +428,9 @@ impl Anim {
     /// Format is RGBA
     pub fn texture(&self, sprite: usize, layer: usize) -> Result<RgbaTexture, Error> {
         let texture = self.sprite_data(sprite)
-            .ok_or_else(|| format_err!("No data for sprite {:x}", sprite))?
+            .ok_or_else(|| ErrKind::NoSpriteData)?
             .textures.get(layer).and_then(|x| x.as_ref())
-            .ok_or_else(|| format_err!("No layer {:x} for sprite {:x}", layer, sprite))?
+            .ok_or_else(|| ErrKind::NoLayer)?
             .clone();
         let mut read = self.read.lock().unwrap();
         read.seek(SeekFrom::Start(texture.offset as u64))?;
@@ -366,18 +491,17 @@ pub fn texture_format<R: Read + Seek>(mut read: R, limit: u32) -> Result<Texture
         read.seek(SeekFrom::Current(-4))?;
         let mut read = read.take(limit.into());
         let dds = Dds::read(&mut read)
-            .map_err(|e| format_err!("Unable to read DDS: {}", e))?;
-        let format = dds.get_d3d_format()
-            .ok_or_else(|| format_err!("Unsupported DDS format"))?;
+            .map_err(|e| ErrKind::Dds("reading DDS", e.to_string()))?;
+        let format = dds.get_d3d_format().ok_or_else(|| ErrKind::NoDxtFormat)?;
         match format {
             D3DFormat::DXT1 => Ok(TextureFormat::Dxt1),
             D3DFormat::DXT5 => Ok(TextureFormat::Dxt5),
-            x => Err(format_err!("Unsupported DDS format {:?}", x)),
+            x => Err(ErrKind::UnsupportedDdsFormat(x).into()),
         }
     } else if magic == BMP_MAGIC {
         Ok(TextureFormat::Monochrome)
     } else {
-        Err(format_err!("Unknown texture format {:08x}", magic))
+        Err(ErrKind::UnknownTextureFormat(magic).into())
     }
 }
 
@@ -390,18 +514,17 @@ pub fn read_texture<R: Read + Seek>(
         read.seek(SeekFrom::Current(-4))?;
         let mut read = read.take(texture.size.into());
         let dds = Dds::read(&mut read)
-            .map_err(|e| format_err!("Unable to read DDS: {}", e))?;
-        let format = dds.get_d3d_format()
-            .ok_or_else(|| format_err!("Unsupported DDS format"))?;
+            .map_err(|e| ErrKind::Dds("reading DDS", e.to_string()))?;
+        let format = dds.get_d3d_format().ok_or_else(|| ErrKind::NoDxtFormat)?;
         let data = dds.get_data(0)
-            .map_err(|e| format_err!("Unable to get DDS data: {}", e))?;
+            .map_err(|e| ErrKind::Dds("getting data", e.to_string()))?;
 
         let width = ((texture.width as u32 - 1) | 3) + 1;
         let height = ((texture.height as u32 - 1) | 3) + 1;
         let mut data = match format {
             D3DFormat::DXT1 => decode_dxt1(&data, width, height)?,
             D3DFormat::DXT5 => decode_dxt5(&data, width, height)?,
-            _ => return Err(format_err!("Unsupported DDS format {:?}", format)),
+            _ => return Err(ErrKind::UnsupportedDdsFormat(format).into()),
         };
         // The decoding functions only work with multiplies of 4,
         // but if some textures aren't such, resize them here.
@@ -436,7 +559,7 @@ pub fn read_texture<R: Read + Seek>(
             height: texture.height as u32,
         })
     } else {
-        return Err(format_err!("Unknown texture format {:08x}", magic));
+        return Err(ErrKind::UnknownTextureFormat(magic).into());
     }
 }
 
@@ -451,7 +574,7 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
     for _y_tile in 0..(height / 4) {
         'single_block: for x_tile in 0..(width / 4) {
             let (mut block, rest) = match read.len() {
-                x if x < 16 => return Err(format_err!("Reached end of input")),
+                x if x < 16 => return Err(ErrKind::Eof.into()),
                 _ => read.split_at(16),
             };
             read = rest;
@@ -536,7 +659,7 @@ fn decode_dxt1(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
     for _y_tile in 0..(height / 4) {
         for x_tile in 0..(width / 4) {
             let (mut block, rest) = match read.len() {
-                x if x < 8 => return Err(format_err!("Reached end of input")),
+                x if x < 8 => return Err(ErrKind::Eof.into()),
                 _ => read.split_at(8),
             };
             read = rest;
@@ -620,7 +743,7 @@ pub struct RgbaTexture {
     pub height: u32,
 }
 
-fn read_textures<R: Read>(mut r: R, count: u32) -> Result<Vec<Option<Texture>>, Error> {
+fn read_textures<R: Read>(mut r: R, count: u32) -> Result<Vec<Option<Texture>>, io::Error> {
     (0..count).map(|_| {
         let texture = Texture {
             offset: r.read_u32::<LE>()?,
@@ -640,14 +763,14 @@ fn write_textures_unchanged<W: Write + Seek, R: ReadSeek>(
     out: &mut W,
     read: &mut R,
     textures: &[Option<Texture>],
-) -> Result<(), Error> {
+) -> Result<(), ImageWriteError> {
     let start = out.seek(SeekFrom::Current(0))?;
     let mut zeroes = io::repeat(0).take(textures.len() as u64 * 0xc);
     io::copy(&mut zeroes, out)?;
     for (i, tex) in textures.iter().enumerate() {
         if let Some(ref tex) = *tex {
             let offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
-                .map_err(|_| format_err!("Output file too big"))?;
+                .map_err(|_| ImageWriteError::OutputTooBig)?;
             let mut bytes = vec![0; tex.size as usize];
             read.seek(SeekFrom::Start(tex.offset.into()))?;
             read.read_exact(&mut bytes)?;
@@ -667,7 +790,7 @@ fn write_textures_patched<W: Write + Seek>(
     out: &mut W,
     changes: &TexChanges,
     texture_count: usize,
-) -> Result<(), Error> {
+) -> Result<(), ImageWriteError> {
     let start = out.seek(SeekFrom::Current(0))?;
     let mut zeroes = io::repeat(0).take(changes.textures.len().max(texture_count) as u64 * 0xc);
     io::copy(&mut zeroes, out)?;
@@ -675,7 +798,7 @@ fn write_textures_patched<W: Write + Seek>(
         if let Some((ref tex, ref bytes)) = *tex {
             let size = bytes.len() as u32;
             let offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
-                .map_err(|_| format_err!("Output file too big"))?;
+                .map_err(|_| ImageWriteError::OutputTooBig)?;
             out.write_all(bytes)?;
             out.seek(SeekFrom::Start(start + i as u64 * 0xc))?;
             out.write_u32::<LE>(offset)?;
@@ -705,7 +828,7 @@ fn read_frames<R: Read>(mut r: R, count: u16) -> Result<Vec<Frame>, Error> {
 fn write_frames<W: Write>(
     out: &mut W,
     frames: &[Frame],
-) -> Result<(), Error> {
+) -> Result<(), ImageWriteError> {
     for f in frames {
         out.write_u16::<LE>(f.tex_x)?;
         out.write_u16::<LE>(f.tex_y)?;

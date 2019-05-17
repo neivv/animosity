@@ -112,12 +112,12 @@ impl<'a> File<'a> {
         if let Some(ref tex) = self.textures {
             let tex = tex.get(layer).and_then(|x| x.as_ref())
                 .ok_or_else(|| format_err!("No texture for layer {}", layer))?;
-            return anim::read_texture(Cursor::new(&tex.1), &tex.0);
+            return Ok(anim::read_texture(Cursor::new(&tex.1), &tex.0)?);
         }
         if let Some(ref tex) = self.grp_textures {
             let tex = tex.get(layer).ok_or_else(|| format_err!("No frame {}", layer))?;
             let anim_tex = tex.0.to_anim_texture_coords();
-            return anim::read_texture(Cursor::new(&tex.1), &anim_tex);
+            return Ok(anim::read_texture(Cursor::new(&tex.1), &anim_tex)?);
         }
         if let Some(Some(img_ref)) = self.image_ref {
             Ok(match self.location {
@@ -168,22 +168,23 @@ impl<'a> File<'a> {
                 match x {
                     Some(ref x) => {
                         let cursor = ::std::io::Cursor::new(&x.1);
-                        anim::texture_format(cursor, x.1.len() as u32).map(|x| Some(x))
+                        let format = anim::texture_format(cursor, x.1.len() as u32)?;
+                        Ok(Some(format))
                     }
                     None => Ok(None),
                 }
             }).collect();
         }
-        if let Some(Some(img_ref)) = self.image_ref {
+        let formats = if let Some(Some(img_ref)) = self.image_ref {
             match self.location {
                 FileLocation::Multiple(_, mainsd) => mainsd.texture_formats(img_ref as usize),
                 FileLocation::Separate(..) => {
                     warn!("Ref in HD sprite??");
-                    return Vec::new()
+                    Vec::new()
                 }
                 FileLocation::DdsGrp(..) => {
                     warn!("Ref in grp??");
-                    return Vec::new()
+                    Vec::new()
                 }
             }
         } else {
@@ -192,7 +193,10 @@ impl<'a> File<'a> {
                 FileLocation::Separate(file) => file.texture_formats(0),
                 FileLocation::DdsGrp(grp) => grp.texture_formats(),
             }
-        }
+        };
+        formats.into_iter()
+            .map(|result| result.map_err(|e| e.into()))
+            .collect()
     }
 
     pub fn layer_names(&self) -> Cow<'a, [String]> {
@@ -272,7 +276,7 @@ impl<'a> FileLocation<'a> {
 
 fn load_mainsd(path: &Path) -> Result<anim::Anim, Error> {
     let file = fs::File::open(path)?;
-    anim::Anim::read(file)
+    Ok(anim::Anim::read(file)?)
 }
 
 impl Files {

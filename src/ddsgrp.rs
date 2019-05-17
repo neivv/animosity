@@ -2,9 +2,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 
 use byteorder::{ReadBytesExt, LE, WriteBytesExt};
-use failure::Error;
 
-use crate::anim;
+use crate::anim::{self, ErrKind, Error};
 
 pub struct DdsGrp {
     pub frame_count: u16,
@@ -44,7 +43,7 @@ impl DdsGrp {
         let scale = r.read_u8()?;
         let version = r.read_u8()?;
         if version != 16 {
-            return Err(format_err!("Unknown version {}", version));
+            return Err(ErrKind::Format(format!("Unknown version {}", version)).into());
         }
         let mut frames = Vec::with_capacity(frame_count as usize);
         for _ in 0..frame_count {
@@ -72,11 +71,10 @@ impl DdsGrp {
     }
 
     pub fn frame(&self, frame: usize) -> Result<anim::RgbaTexture, Error> {
-        let frame = self.frames.get(frame)
-            .ok_or_else(|| format_err!("Frame {} doesn't exist", frame))?;
+        let frame = self.frames.get(frame).ok_or_else(|| ErrKind::NoFrame)?;
         let mut read = self.read.lock().unwrap();
         read.seek(SeekFrom::Start(frame.offset as u64))?;
-        anim::read_texture(&mut *read, &frame.to_anim_texture_coords())
+        Ok(anim::read_texture(&mut *read, &frame.to_anim_texture_coords())?)
     }
 
     pub fn texture_size(&self, frame: usize) -> Option<anim::Texture> {
@@ -87,7 +85,8 @@ impl DdsGrp {
         let mut read = self.read.lock().unwrap();
         self.frames.iter().map(|f| {
             read.seek(SeekFrom::Start(f.offset as u64))?;
-            anim::texture_format(&mut *read, f.size).map(Some)
+            let format = anim::texture_format(&mut *read, f.size)?;
+            Ok(Some(format))
         }).collect()
     }
 
