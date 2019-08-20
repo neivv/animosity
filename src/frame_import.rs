@@ -218,10 +218,12 @@ pub fn import_frames<F: Fn(f32)>(
                 let (data, width, height) =
                     frame_reader.read_frame(frame_info, i, f, frame_scale)?;
                 let mut bounded = rgba_bounding_box(&data, width, height);
+                let x_offset = (frame_info.offset_x as f32 * frame_scale) as i32;
+                let y_offset = (frame_info.offset_y as f32 * frame_scale) as i32;
                 bounded.coords.x_offset =
-                    bounded.coords.x_offset.saturating_add(frame_info.offset_x) * scale as i32;
+                    bounded.coords.x_offset.saturating_add(x_offset) * scale as i32;
                 bounded.coords.y_offset =
-                    bounded.coords.y_offset.saturating_add(frame_info.offset_y) * scale as i32;
+                    bounded.coords.y_offset.saturating_add(y_offset) * scale as i32;
                 bounded.coords.width *= scale;
                 bounded.coords.height *= scale;
                 layout.add_frame(layer, f as usize, bounded.data, bounded.coords);
