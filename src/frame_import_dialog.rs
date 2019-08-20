@@ -47,6 +47,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         path = file.path().to_owned();
         grp_scale = file.grp().map(|x| x.scale);
     }
+    let is_sd_anim = is_anim && tex_id.1 == SpriteType::Sd;
     let has_hd2 = if is_anim && tex_id.1 != SpriteType::Sd {
         let other_ty = match tex_id.1 {
             SpriteType::Hd => SpriteType::Hd2,
@@ -184,6 +185,72 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         grp_scale_entry = Some(entry);
     };
 
+    let sd_anim_grp_bx;
+    let sd_anim_grp_radios;
+    let sd_anim_grp_filename;
+    if is_sd_anim {
+        let no_grp = gtk::RadioButton::new_with_label("Don't create");
+        let default_name =
+            gtk::RadioButton::new_with_label_from_widget(&no_grp, "Default path");
+        let default_grp_path = files.image_grp_path(tex_id.0);
+        if default_grp_path.is_some() {
+            default_name.set_tooltip_text("Uses a path read from images.dat and images.tbl");
+        } else {
+            default_name.set_sensitive(false);
+            default_name.set_tooltip_text("\
+                Uses a path derived from images.dat and images.tbl\n\
+                (Unable to get GRP path)");
+        }
+        let custom_name = gtk::RadioButton::new_with_label_from_widget(&no_grp, "Custom path");
+        let (filename_entry, filename_frame) = crate::int_entry::entry();
+        filename_entry.set_sensitive(false);
+        let bx = box_vertical(&[
+            &no_grp,
+            &default_name,
+            &custom_name,
+            &filename_frame,
+        ]);
+        let filename_entry2 = filename_entry.clone();
+        no_grp.connect_toggled(move |this| {
+            if this.get_active() {
+                filename_entry2.set_sensitive(false);
+                filename_entry2.set_text("");
+            }
+        });
+        let filename_entry2 = filename_entry.clone();
+        default_name.connect_toggled(move |this| {
+            if this.get_active() {
+                filename_entry2.set_sensitive(false);
+                if let Some(ref path) = default_grp_path {
+                    filename_entry2.set_text(path);
+                }
+            }
+        });
+        let filename_entry2 = filename_entry.clone();
+        custom_name.connect_toggled(move |this| {
+            if this.get_active() {
+                filename_entry2.set_sensitive(true);
+                let name = read_config_entry("sd_grp_custom_name")
+                    .unwrap_or_else(|| "something.grp".into());
+                filename_entry2.set_text(&name);
+            }
+        });
+        sd_anim_grp_filename = Some(filename_entry);
+        sd_anim_grp_bx = Some(label_section("GRP creation", &bx));
+        sd_anim_grp_radios = vec![no_grp, default_name, custom_name];
+        let last_selected = read_config_entry("sd_grp_last_selected")
+            .and_then(|x| x.parse::<u8>().ok())
+            .and_then(|x| sd_anim_grp_radios.get(x as usize))
+            .or_else(|| sd_anim_grp_radios.get(0));
+        if let Some(last_selected) = last_selected {
+            last_selected.set_active(true);
+        }
+    } else {
+        sd_anim_grp_bx = None;
+        sd_anim_grp_radios = vec![];
+        sd_anim_grp_filename = None;
+    }
+
     let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
     let ok_button = gtk::Button::new_with_label("Import");
     ok_button.set_sensitive(true);
@@ -209,6 +276,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let waiting_for_thread2 = waiting_for_thread.clone();
     let rest_of_ui: Rc<RefCell<Vec<gtk::Box>>> = Rc::new(RefCell::new(Vec::new()));
     let rest_of_ui2 = rest_of_ui.clone();
+    let files_root: Option<PathBuf> = files.root_path().map(|x| x.into());
     ok_button.connect_clicked(move |_| {
         if waiting_for_thread.get() {
             return;
@@ -283,6 +351,29 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
 
             let frame_count = if hd2_fi.is_some() { 2 } else { 1 } *
                 frame_info.layers.len() as u32 * frame_info.frame_count;
+
+            let active_grp_radio_index = sd_anim_grp_radios.iter().position(|x| x.get_active());
+            let grp_filename = if let Some(index) = active_grp_radio_index {
+                set_config_entry("sd_grp_last_selected", &index.to_string());
+                if index == 2 {
+                    if let Some(ref entry) = sd_anim_grp_filename {
+                        if let Some(text) = entry.get_text() {
+                            set_config_entry("sd_grp_custom_name", &text);
+                        }
+                    }
+                }
+                if index == 0 {
+                    None
+                } else {
+                    sd_anim_grp_filename.as_ref()
+                        .and_then(|entry| {
+                            let text: &str = &entry.get_text()?;
+                            Some(files_root.as_ref()?.join(text))
+                        })
+                }
+            } else {
+                None
+            };
             std::thread::spawn(move || {
                 let mut files = files_arc.lock().unwrap();
                 let result = frame_import::import_frames(
@@ -296,6 +387,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     &formats,
                     tex_id.0,
                     tex_id.1,
+                    grp_filename.as_ref().map(|x| &**x),
                     |step| send.send(Progress::Progress(step)).unwrap(),
                 );
                 let _ = send.send(Progress::Done(result.map(|()| frame_count)));
@@ -466,6 +558,9 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     rest_bx.pack_start(&layers_bx, false, false, 0);
     if let Some(scale) = grp_scale_bx {
         rest_bx.pack_start(&scale, false, false, 0);
+    }
+    if let Some(sd_grp) = sd_anim_grp_bx {
+        rest_bx.pack_start(&sd_grp, false, false, 0);
     }
     let bx = box_vertical(&[
         &rest_bx,

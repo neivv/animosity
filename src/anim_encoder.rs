@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::convert::TryFrom;
+use std::io::{Write, Seek, SeekFrom};
 use std::mem;
 use std::rc::Rc;
 
 use byteorder::{LE, WriteBytesExt};
 use ddsfile::{Dds, D3DFormat};
+use failure::ResultExt;
 
-use crate::anim;
+use crate::{anim, Error};
 
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct Frame {
@@ -45,7 +48,8 @@ struct TexCoords {
 pub struct Layout {
     // One hashmap for each layer, equivalent frame data
     frames: Vec<HashMap<Rc<Frame>, Vec<(usize, (i32, i32))>>>,
-    frame_lookup: Vec<Vec<Option<Rc<Frame>>>>,
+    // layer id -> frame id
+    frame_lookup: Vec<Vec<Option<(Rc<Frame>, i32, i32)>>>,
 }
 
 pub struct LayoutResult {
@@ -117,7 +121,6 @@ impl LayoutResult {
     }
 }
 
-
 impl Layout {
     pub fn new() -> Layout {
         Layout {
@@ -153,7 +156,7 @@ impl Layout {
         while lookup.len() < frame + 1 {
             lookup.push(None);
         }
-        lookup[frame] = Some(frame_rc);
+        lookup[frame] = Some((frame_rc, coords.x_offset, coords.y_offset));
     }
 
     pub fn layout(mut self) -> LayoutResult {
@@ -168,7 +171,7 @@ impl Layout {
             let self_frames = &self.frames;
             let mut frames = self.frame_lookup.iter_mut().enumerate().map(|(i, vec)| {
                 if f < vec.len() {
-                    vec.swap_remove(f).map(|f| (f, i))
+                    vec.swap_remove(f).map(|(frame_data, _x, _y)| (frame_data, i))
                 } else {
                     None
                 }
@@ -224,8 +227,82 @@ impl Layout {
 
         layout_frames(layout_order, 8, frame_count)
     }
+
+    pub fn write_grp<W: Write + Seek>(
+        &self,
+        out: &mut W,
+        width: u16,
+        height: u16,
+    ) -> Result<(), Error> {
+        let frames = self.frame_lookup.get(0)
+            .ok_or_else(|| format_err!("No frames for layer 0"))?;
+        out.write_u16::<LE>(u16::try_from(frames.len()).context("Too many frames")?)?;
+        out.write_u16::<LE>(width)?;
+        out.write_u16::<LE>(height)?;
+        for frame in frames.iter() {
+            if let Some((frame, x, y)) = frame {
+                out.write_u8(u8::try_from(*x).context("Bad frame x")?)?;
+                out.write_u8(u8::try_from(*y).context("Bad frame y")?)?;
+                out.write_u8(u8::try_from(frame.width).context("Bad frame width")?)?;
+                out.write_u8(u8::try_from(frame.height).context("Bad frame height")?)?;
+            } else {
+                out.write_u32::<LE>(0)?;
+            }
+            out.write_u32::<LE>(0)?;
+        }
+        let mut frame_offsets = Vec::with_capacity(frames.len());
+        for frame in frames.iter() {
+            frame_offsets.push(out.seek(SeekFrom::Current(0))? as u32);
+            if let Some((frame, _, _)) = frame {
+                write_grp_frame(out, frame)?;
+            }
+        }
+        out.seek(SeekFrom::Start(10))?;
+        for offset in frame_offsets {
+            out.write_u32::<LE>(offset)?;
+            out.seek(SeekFrom::Current(4))?;
+        }
+
+        Ok(())
+    }
 }
 
+fn write_grp_frame<W: Write + Seek>(
+    out: &mut W,
+    frame: &Frame,
+) -> Result<(), Error> {
+    let mut line_offsets = Vec::with_capacity(frame.height as usize);
+    let start = out.seek(SeekFrom::Current(0))?;
+    for _ in 0..frame.height {
+        out.write_u16::<LE>(0)?;
+    }
+    let mut offset = frame.height as u16 * 2;
+    for line in frame.data.chunks_exact(frame.width as usize * 4) {
+        line_offsets.push(offset);
+        let mut pos = line;
+        while pos.len() >= 4 {
+            let len;
+            if pos[3] == 0 {
+                // Write transparent
+                len = pos.chunks_exact(4).take(0x7f).take_while(|x| x[3] == 0).count();
+                out.write_u8(0x80 | len as u8)?;
+                offset += 1;
+            } else {
+                len = pos.chunks_exact(4).take(0x3f).take_while(|x| x[3] != 0).count();
+                out.write(&[0x40 | len as u8, 0x01])?;
+                offset += 2;
+            }
+            pos = &pos[4 * len..];
+        }
+    }
+    let end = out.seek(SeekFrom::Current(0))?;
+    out.seek(SeekFrom::Start(start))?;
+    for offset in line_offsets {
+        out.write_u16::<LE>(offset)?;
+    }
+    out.seek(SeekFrom::Start(end))?;
+    Ok(())
+}
 
 fn layout_frames(
     mut frames: Vec<(Vec<(usize, FrameOffset)>, LayerFrames)>,

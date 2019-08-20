@@ -198,6 +198,7 @@ pub fn import_frames<F: Fn(f32)>(
     formats: &[anim::TextureFormat],
     sprite: usize,
     ty: SpriteType,
+    grp_path: Option<&Path>,
     report_progress: F,
 ) -> Result<(), Error> {
     fn add_layers<F: Fn(f32)>(
@@ -208,15 +209,19 @@ pub fn import_frames<F: Fn(f32)>(
         frame_scale: f32,
         scale: u32,
         report_progress: F,
-    ) -> Result<(), Error> {
+    ) -> Result<(u32, u32), Error> {
         let mut frame_reader = FrameReader::new(dir.into());
         let mut step = 1.0;
         let step_count = frame_info.layers.len() as f32 * frame_info.frame_count as f32;
+        let mut image_width = 0;
+        let mut image_height = 0;
         for &(i, _) in &frame_info.layers {
             let layer = first_layer + i as usize;
             for f in 0..frame_info.frame_count {
                 let (data, width, height) =
                     frame_reader.read_frame(frame_info, i, f, frame_scale)?;
+                image_width = image_width.max(width);
+                image_height = image_height.max(height);
                 let mut bounded = rgba_bounding_box(&data, width, height);
                 let x_offset = (frame_info.offset_x as f32 * frame_scale) as i32;
                 let y_offset = (frame_info.offset_y as f32 * frame_scale) as i32;
@@ -231,7 +236,7 @@ pub fn import_frames<F: Fn(f32)>(
                 step += 1.0;
             }
         }
-        Ok(())
+        Ok((image_width, image_height))
     }
 
     let hd2_frame_info = match (hd2_frame_info, hd2_dir) {
@@ -245,7 +250,7 @@ pub fn import_frames<F: Fn(f32)>(
         true => 0.5,
         false => 1.0,
     };
-    add_layers(
+    let (width, height) = add_layers(
         &mut layout,
         frame_info,
         dir,
@@ -264,6 +269,19 @@ pub fn import_frames<F: Fn(f32)>(
             2,
             |step| report_progress(0.5 + step * 0.5),
         )?;
+    }
+    if let Some(grp_path) = grp_path {
+        if let Some(parent) = grp_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut file = std::fs::File::create(grp_path)
+            .with_context(|_| format!("Couldn't create {}", grp_path.display()))?;
+        let width = u16::try_from(width)
+            .context("Sprite dimensions too large")?;
+        let height = u16::try_from(height)
+            .context("Sprite dimensions too large")?;
+        layout.write_grp(&mut file, width, height)
+            .context("Couldn't write GRP")?;
     }
     let layout_result = layout.layout();
 
@@ -327,6 +345,7 @@ pub fn import_frames<F: Fn(f32)>(
         }
         files.set_tex_changes(sprite, SpriteType::Hd2, changes);
     }
+
     Ok(())
 }
 

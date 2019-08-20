@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use byteorder::{ReadBytesExt, LE};
 use failure::{Error, ResultExt};
 
 use crate::anim::{self, SpriteValues};
@@ -16,7 +17,12 @@ pub struct Files {
     root_path: Option<PathBuf>,
     open_files: OpenFiles,
     edits: HashMap<(usize, SpriteType), Edit>,
+    images_dat: Vec<u8>,
+    images_tbl: Vec<u8>,
 }
+
+static DEFAULT_IMAGES_TBL: &[u8] = include_bytes!("../arr/images.tbl");
+static DEFAULT_IMAGES_DAT: &[u8] = include_bytes!("../arr/images.dat");
 
 struct OpenFiles {
     anim: Vec<(anim::Anim, usize, SpriteType)>,
@@ -287,6 +293,8 @@ impl Files {
             root_path: None,
             open_files: OpenFiles::new(),
             edits: HashMap::new(),
+            images_dat: Vec::new(),
+            images_tbl: Vec::new(),
         }
     }
 
@@ -309,6 +317,10 @@ impl Files {
             };
             let sprite_count = mainsd_anim.as_ref().map(|x| x.1.sprites().len())
                 .unwrap_or(999);
+            let images_dat = std::fs::read(root.join("arr/images.dat"))
+                .unwrap_or_else(|_| DEFAULT_IMAGES_DAT.into());
+            let images_tbl = std::fs::read(root.join("arr/images.tbl"))
+                .unwrap_or_else(|_| DEFAULT_IMAGES_TBL.into());
             Ok(Files {
                 sprites: (0..sprite_count as u32).map(|i| {
                     let hd_filename = |i: u32, prefix: &str| {
@@ -328,6 +340,8 @@ impl Files {
                 root_path: Some(root.into()),
                 open_files: OpenFiles::new(),
                 edits: HashMap::new(),
+                images_dat,
+                images_tbl,
             })
         } else {
             match one_filename.extension().map(|x| x == "anim").unwrap_or(false) {
@@ -344,6 +358,8 @@ impl Files {
                         root_path: Some(one_filename.into()),
                         open_files: OpenFiles::new(),
                         edits: HashMap::new(),
+                        images_dat: Vec::new(),
+                        images_tbl: Vec::new(),
                     })
                 }
                 false => {
@@ -353,6 +369,8 @@ impl Files {
                         root_path: Some(one_filename.into()),
                         open_files: OpenFiles::new(),
                         edits: HashMap::new(),
+                        images_dat: Vec::new(),
+                        images_tbl: Vec::new(),
                     })
                 }
             }
@@ -791,6 +809,19 @@ impl Files {
         }
 
         Ok(result?)
+    }
+
+    pub fn image_grp_path(&self, image_id: usize) -> Option<String> {
+        if self.images_tbl.is_empty() || self.images_dat.is_empty() {
+            return None;
+        }
+        let tbl_index = self.images_dat.get(image_id.checked_mul(4)?..)?
+            .read_u32::<LE>().ok()? as usize;
+        let tbl_offset = self.images_tbl.get(tbl_index.checked_mul(2)?..)?
+            .read_u16::<LE>().ok()? as usize;
+        let string_data = self.images_tbl.get(tbl_offset..)?;
+        let string_len = string_data.iter().position(|&x| x == 0)?;
+        Some(format!("unit\\{}", String::from_utf8_lossy(&string_data[..string_len])))
     }
 }
 
