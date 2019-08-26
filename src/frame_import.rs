@@ -303,14 +303,6 @@ pub fn import_frames<F: Fn(f32)>(
         SpriteType::Hd2 => 2u16,
         _ => 1,
     };
-    let alignment = match ty {
-        SpriteType::Hd => 8,
-        SpriteType::Hd2 => 4,
-        SpriteType::Sd => 4,
-    };
-    let align = |val: u16| {
-        ((val - 1) | (alignment - 1)) + 1
-    };
 
     let mut changes = layout_result.encode(0, &formats, 1);
     for f in &mut changes.frames {
@@ -318,8 +310,8 @@ pub fn import_frames<F: Fn(f32)>(
         f.tex_y *= scale_mul;
         f.x_off *= scale_mul as i16;
         f.y_off *= scale_mul as i16;
-        f.width = align(f.width) * scale_mul;
-        f.height = align(f.height) * scale_mul;
+        f.width = f.width * scale_mul;
+        f.height = f.height * scale_mul;
     }
     for ty in &frame_info.frame_types {
         for f in ty.first_frame..ty.last_frame + 1 {
@@ -333,8 +325,8 @@ pub fn import_frames<F: Fn(f32)>(
         let mut changes = layout_result.encode(layer_count, &formats, 2);
         for f in &mut changes.frames {
             // The coordinates are already 2x otherwise
-            f.width = align(f.width);
-            f.height = align(f.height);
+            f.width = f.width;
+            f.height = f.height;
         }
         for ty in &hd2.frame_types {
             for f in ty.first_frame..ty.last_frame + 1 {
