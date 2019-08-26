@@ -1550,7 +1550,7 @@ fn create_menu() -> gio::Menu {
         let file_actions = {
             let menu = gio::Menu::new();
             menu.append_item(&with_accel("_Open...", "app.open", "<Ctrl>O"));
-            menu.append_item(&with_accel("_Save...", "app.save", "<Ctrl>S"));
+            menu.append_item(&with_accel("_Save", "app.save", "<Ctrl>S"));
             menu
         };
         menu.append_section(None, &file_actions);
