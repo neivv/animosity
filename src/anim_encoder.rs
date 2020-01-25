@@ -4,9 +4,9 @@ use std::io::{Write, Seek, SeekFrom};
 use std::mem;
 use std::rc::Rc;
 
+use anyhow::Context;
 use byteorder::{LE, WriteBytesExt};
 use ddsfile::{Dds, D3DFormat};
-use failure::ResultExt;
 
 use crate::{anim, Error};
 
@@ -235,7 +235,7 @@ impl Layout {
         height: u16,
     ) -> Result<(), Error> {
         let frames = self.frame_lookup.get(0)
-            .ok_or_else(|| format_err!("No frames for layer 0"))?;
+            .ok_or_else(|| anyhow!("No frames for layer 0"))?;
         out.write_u16::<LE>(u16::try_from(frames.len()).context("Too many frames")?)?;
         out.write_u16::<LE>(width)?;
         out.write_u16::<LE>(height)?;

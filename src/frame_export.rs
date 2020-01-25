@@ -4,8 +4,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path};
 
-use failure::ResultExt;
-use png::HasParameters;
+use anyhow::Context;
 
 use crate::anim::{Frame, RgbaTexture};
 use crate::files;
@@ -24,7 +23,7 @@ pub fn export_frames<F: Fn(f32)>(
     report_progress: F,
 ) -> Result<(), Error> {
     if !path.is_dir() {
-        return Err(format_err!("{} is not a directory", path.to_string_lossy()));
+        return Err(anyhow!("{} is not a directory", path.to_string_lossy()));
     }
 
     let scale_div = match ty {
@@ -32,10 +31,10 @@ pub fn export_frames<F: Fn(f32)>(
         _ => 1u32,
     };
 
-    let frames = file.frames().ok_or_else(|| format_err!("Unable to get frames"))?;
+    let frames = file.frames().ok_or_else(|| anyhow!("Unable to get frames"))?;
     let values = match file.sprite_values() {
         Some(s) => s,
-        None => return Err(format_err!("Couldn't get sprite values")),
+        None => return Err(anyhow!("Couldn't get sprite values")),
     };
     let enum_prefixes =
         layer_prefixes.iter().enumerate().flat_map(|(i, x)| x.as_ref().map(|x| (i, x)));
@@ -61,7 +60,7 @@ pub fn export_frames<F: Fn(f32)>(
             let image_height = frame_height * (1 + frames.len() / 16) as u32;
             let path = &path.join(format!("{}.png", prefix));
             let out = File::create(path)
-                .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
+                .with_context(|| format!("Unable to create {}", path.to_string_lossy()))?;
             let out = BufWriter::new(out);
             let mut bytes = vec![0; (image_width * image_height * 4) as usize];
             for (n, frame) in frames.iter().enumerate() {
@@ -77,13 +76,13 @@ pub fn export_frames<F: Fn(f32)>(
                     y,
                     x_base,
                     y_base,
-                ).with_context(|_| format!("Writing frame {}", n))?;
+                ).with_context(|| format!("Writing frame {}", n))?;
                 report_progress(step / step_count);
                 step += 1.0;
             }
 
             let mut encoder = png::Encoder::new(out, image_width, image_height);
-            encoder.set(png::ColorType::RGBA);
+            encoder.set_color(png::ColorType::RGBA);
             let mut encoder = encoder.write_header()?;
             encoder.write_image_data(&bytes)?;
 
@@ -91,7 +90,7 @@ pub fn export_frames<F: Fn(f32)>(
                 first_frame: 0,
                 frame_count: frames.len() as u32,
                 layer: i as u32,
-                path: path.to_str().ok_or_else(|| format_err!("Bad PNG path"))?.into(),
+                path: path.to_str().ok_or_else(|| anyhow!("Bad PNG path"))?.into(),
                 frame_width,
                 frame_height,
                 frame_size_overrides: HashMap::default(),
@@ -108,7 +107,7 @@ pub fn export_frames<F: Fn(f32)>(
                     frame_height,
                     x_base,
                     y_base,
-                ).with_context(|_| format!("Writing frame {}", n))?;
+                ).with_context(|| format!("Writing frame {}", n))?;
                 report_progress(step / step_count);
                 step += 1.0;
             }
@@ -182,7 +181,7 @@ fn decode_frame_to_buf(
         let image_row = texture.data.get(tex_start..tex_start + frame_width as usize * 4);
         let image_row = match image_row {
             Some(s) => s,
-            None => return Err(format_err!("Bad frame data")),
+            None => return Err(anyhow!("Bad frame data")),
         };
         (&mut bytes[byte_pos..byte_pos + frame_width as usize * 4]).copy_from_slice(image_row);
         byte_pos += stride as usize * 4;
@@ -201,7 +200,7 @@ fn write_frame(
     y_base: i32,
 ) -> Result<(), Error> {
     let out = File::create(&path)
-        .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
+        .with_context(|| format!("Unable to create {}", path.to_string_lossy()))?;
     let out = BufWriter::new(out);
 
     let tex_x = frame.tex_x / scale_div as u16;
@@ -223,7 +222,7 @@ fn write_frame(
         let image_row = texture.data.get(tex_start..tex_start + frame_width as usize * 4);
         let image_row = match image_row {
             Some(s) => s,
-            None => return Err(format_err!("Bad frame data")),
+            None => return Err(anyhow!("Bad frame data")),
         };
         bytes.extend((0..blank_left).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
         bytes.extend_from_slice(image_row);
@@ -234,7 +233,7 @@ fn write_frame(
     );
 
     let mut encoder = png::Encoder::new(out, out_width, out_height);
-    encoder.set(png::ColorType::RGBA);
+    encoder.set_color(png::ColorType::RGBA);
     let mut encoder = encoder.write_header()?;
     encoder.write_image_data(&bytes)?;
     Ok(())
@@ -249,7 +248,7 @@ pub fn export_grp<F: Fn(f32)>(
     report_progress: F,
 ) -> Result<(), Error> {
     if !path.is_dir() {
-        return Err(format_err!("{} is not a directory", path.to_string_lossy()));
+        return Err(anyhow!("{} is not a directory", path.to_string_lossy()));
     }
 
     let mut multi_frame_images = Vec::new();
@@ -280,7 +279,7 @@ pub fn export_grp<F: Fn(f32)>(
         let image_height = frame_height * (1 + layer_count / frames_per_row) as u32;
         let path = &path.join(format!("{}.png", prefix));
         let out = File::create(path)
-            .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
+            .with_context(|| format!("Unable to create {}", path.to_string_lossy()))?;
         let out = BufWriter::new(out);
         let mut bytes = vec![0; (image_width * image_height * 4) as usize];
         let mut frame_size_overrides = HashMap::new();
@@ -307,7 +306,7 @@ pub fn export_grp<F: Fn(f32)>(
         }
 
         let mut encoder = png::Encoder::new(out, image_width, image_height);
-        encoder.set(png::ColorType::RGBA);
+        encoder.set_color(png::ColorType::RGBA);
         let mut encoder = encoder.write_header()?;
         encoder.write_image_data(&bytes)?;
 
@@ -315,7 +314,7 @@ pub fn export_grp<F: Fn(f32)>(
             first_frame: 0,
             frame_count: layer_count as u32,
             layer: 0,
-            path: path.to_str().ok_or_else(|| format_err!("Bad PNG path"))?.into(),
+            path: path.to_str().ok_or_else(|| anyhow!("Bad PNG path"))?.into(),
             frame_width,
             frame_height,
             frame_size_overrides,
@@ -327,11 +326,11 @@ pub fn export_grp<F: Fn(f32)>(
 
             let path = path.join(format!("{}_{:03}.png", prefix, i));
             let out = File::create(&path)
-                .with_context(|_| format!("Unable to create {}", path.to_string_lossy()))?;
+                .with_context(|| format!("Unable to create {}", path.to_string_lossy()))?;
             let out = BufWriter::new(out);
 
             let mut encoder = png::Encoder::new(out, texture.width, texture.height);
-            encoder.set(png::ColorType::RGBA);
+            encoder.set_color(png::ColorType::RGBA);
             let mut encoder = encoder.write_header()?;
             encoder.write_image_data(&texture.data)?;
             // Uh, multi-frame images which are single frame each =)
@@ -339,7 +338,7 @@ pub fn export_grp<F: Fn(f32)>(
                 first_frame: 0,
                 frame_count: 1,
                 layer: 0,
-                path: path.to_str().ok_or_else(|| format_err!("Bad PNG path"))?.into(),
+                path: path.to_str().ok_or_else(|| anyhow!("Bad PNG path"))?.into(),
                 frame_width: texture.width,
                 frame_height: texture.height,
                 frame_size_overrides: HashMap::default(),

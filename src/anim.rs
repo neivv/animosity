@@ -572,7 +572,7 @@ fn decode_dxt5(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Error> {
     let mut out = vec![0u8; size * 4];
     let mut pos = 0u32;
     for _y_tile in 0..(height / 4) {
-        'single_block: for x_tile in 0..(width / 4) {
+        for x_tile in 0..(width / 4) {
             let (mut block, rest) = match read.len() {
                 x if x < 16 => return Err(ErrKind::Eof.into()),
                 _ => read.split_at(16),

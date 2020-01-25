@@ -1,10 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gdk;
-use gio;
-use gtk;
-
 use gio::prelude::*;
 use gtk::prelude::*;
 
@@ -40,7 +36,7 @@ pub fn entry() -> (gtk::Entry, gtk::Frame) {
     hints.insert(gtk::InputHints::NO_EMOJI);
     entry.set_input_hints(hints);
     let frame = gtk::Frame::new(None);
-    <_ as gtk::WidgetExt>::set_name(&frame, "entry_frame");
+    <_ as gtk::WidgetExt>::set_widget_name(&frame, "entry_frame");
     frame.add(&entry);
     let style_ctx = frame.get_style_context();
     let css = crate::get_css_provider();

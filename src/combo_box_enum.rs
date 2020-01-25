@@ -25,7 +25,7 @@ impl<E: Copy + Clone + Eq + PartialEq + 'static> ComboBoxEnum<E> {
 
     pub fn set_active(&self, value: &E) {
         if let Some(i) = self.cases.iter().enumerate().find(|x| (x.1).0 == *value).map(|x| x.0) {
-            self.combo_box.set_active(i as u32);
+            self.combo_box.set_active(Some(i as u32));
         }
     }
 

@@ -4,7 +4,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gio::prelude::*;
-use gtk;
 use gtk::prelude::*;
 use serde_derive::{Serialize, Deserialize};
 
@@ -174,13 +173,13 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         let entry = IntEntry::new(IntSize::Int8);
         entry.set_value(grp_scale.unwrap_or(0).into());
         let labeled = label_section("Ingame scale", &entry.frame);
-        labeled.set_tooltip_text("\
+        labeled.set_tooltip_text(Some("\
             Selects the scale value saved within file.\n\
             Generally the correct setting is to use 1 for SD, 2 for HD2, and 4 for HD,\n\
             which should be what this value gets set automatically anyway.\n\
             \n\
             (It is mainly visible to let you fix any issues if the file happened to have wrong \
-            values in the first place)");
+            values in the first place)"));
         grp_scale_bx = Some(labeled);
         grp_scale_entry = Some(entry);
     };
@@ -194,12 +193,14 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             gtk::RadioButton::new_with_label_from_widget(&no_grp, "Default path");
         let default_grp_path = files.image_grp_path(tex_id.0);
         if default_grp_path.is_some() {
-            default_name.set_tooltip_text("Uses a path read from images.dat and images.tbl");
+            default_name.set_tooltip_text(Some(
+                "Uses a path read from images.dat and images.tbl"
+            ));
         } else {
             default_name.set_sensitive(false);
-            default_name.set_tooltip_text("\
+            default_name.set_tooltip_text(Some("\
                 Uses a path derived from images.dat and images.tbl\n\
-                (Unable to get GRP path)");
+                (Unable to get GRP path)"));
         }
         let custom_name = gtk::RadioButton::new_with_label_from_widget(&no_grp, "Custom path");
         let (filename_entry, filename_frame) = crate::int_entry::entry();
@@ -459,13 +460,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                         window.destroy();
                     }
                     Err(e) => {
-                        use std::fmt::Write;
-                        let mut msg = format!("Unable to import frames:\n");
-                        for c in e.iter_chain() {
-                            writeln!(msg, "{}", c).unwrap();
-                        }
-                        // Remove last newline
-                        msg.pop();
+                        let msg = format!("Unable to import frames: {:?}", e);
                         error_msg_box(&window, msg);
                     }
                 }
@@ -515,13 +510,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     format.set_sensitive(false);
                     format.clear_active();
                 }
-                let mut msg = format!("Frame info invalid:\n");
-                for c in e.iter_chain() {
-                    use std::fmt::Write;
-                    writeln!(msg, "{}", c).unwrap();
-                }
-                // Remove last newline
-                msg.pop();
+                let msg = format!("Frame info invalid: {:?}", e);
                 if hd2 {
                     *hd2_frame_info.borrow_mut() = None;
                 } else {
@@ -640,12 +629,12 @@ impl ScaleChooser {
             }
         });
         let bx = label_section("Scale", combo_box.widget());
-        bx.set_tooltip_text("\
+        bx.set_tooltip_text(Some("\
             Down/upscales the PNG frames. 1x for no change.\n\
             \n\
             E.g.\n\
             To import HD-resolution frames to HD2, set scale to 0.50x,\n\
-            to import SD-resolution frames to HD, set scale to 4x.");
+            to import SD-resolution frames to HD, set scale to 4x."));
         ScaleChooser {
             bx,
             combo_box,

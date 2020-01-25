@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
-use failure::ResultExt;
+use anyhow::Context;
 use image::{GenericImageView, RgbaImage};
 
 use crate::anim;
@@ -27,14 +27,14 @@ pub fn import_frames_grp<F: Fn(f32)>(
     let mut reader = FrameReader::new(dir.into());
     for i in 0..frame_info.frame_count {
         let (data, width, height) = reader.read_frame(frame_info, 0, i, frame_scale)
-            .with_context(|_| format!("Reading frame {}", i))?;
+            .with_context(|| format!("Reading frame {}", i))?;
         let data = anim_encoder::encode(&data, width, height, format);
         frames.push((ddsgrp::Frame {
             unknown: 0,
             width: u16::try_from(width)
-                .map_err(|_| format_err!("Frame {} width too large", i))?,
+                .map_err(|_| anyhow!("Frame {} width too large", i))?,
             height: u16::try_from(height)
-                .map_err(|_| format_err!("Frame {} width too large", i))?,
+                .map_err(|_| anyhow!("Frame {} width too large", i))?,
             size: data.len() as u32,
             offset: !0,
         }, data));
@@ -50,26 +50,24 @@ struct FrameReader {
 }
 
 fn load_png<R: Read>(reader: BufReader<R>) -> Result<RgbaImage, Error> {
-    let decoder = png::Decoder::new_with_limits(reader, png::Limits {
-        pixels: 1 << 28, // HD wirefram is over the default limit (1 << 26)
-    });
+    let decoder = png::Decoder::new(reader);
     let (info, mut reader) = decoder.read_info()?;
     let mut buf = vec![0; info.buffer_size()];
     reader.next_frame(&mut buf)?;
     let rgba = arbitrary_png_to_rgba(buf, &info)?;
     image::ImageBuffer::from_raw(info.width, info.height, rgba)
-        .ok_or_else(|| format_err!("Couldn't create image from raw bytes"))
+        .ok_or_else(|| anyhow!("Couldn't create image from raw bytes"))
 }
 
 fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>, Error> {
     if info.bit_depth != png::BitDepth::Eight {
-        return Err(format_err!("Bit depth {:?} not supported", info.bit_depth));
+        return Err(anyhow!("Bit depth {:?} not supported", info.bit_depth));
     }
     match info.color_type {
         png::ColorType::RGBA => Ok(buf),
         png::ColorType::RGB => {
             if buf.len() != (info.width * info.height) as usize * 3 {
-                return Err(format_err!("RGB buffer size isn't 3 * w * h?"));
+                return Err(anyhow!("RGB buffer size isn't 3 * w * h?"));
             }
             let mut out = vec![0; (info.width * info.height) as usize * 4];
             for (out, input) in out.chunks_mut(4).zip(buf.chunks(3)) {
@@ -82,7 +80,7 @@ fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>
         }
         png::ColorType::Grayscale => {
             if buf.len() != (info.width * info.height) as usize {
-                return Err(format_err!("Grayscale buffer size isn't w * h?"));
+                return Err(anyhow!("Grayscale buffer size isn't w * h?"));
             }
             let mut out = vec![0; (info.width * info.height) as usize * 4];
             for (out, input) in out.chunks_mut(4).zip(buf.chunks(1)) {
@@ -95,7 +93,7 @@ fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>
         }
         png::ColorType::GrayscaleAlpha => {
             if buf.len() != (info.width * info.height) as usize * 2 {
-                return Err(format_err!("Grayscale + alpha buffer size isn't 2 * w * h?"));
+                return Err(anyhow!("Grayscale + alpha buffer size isn't 2 * w * h?"));
             }
             let mut out = vec![0; (info.width * info.height) as usize * 4];
             for (out, input) in out.chunks_mut(4).zip(buf.chunks(2)) {
@@ -106,7 +104,7 @@ fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>
             }
             Ok(out)
         }
-        _ => Err(format_err!("Unsupported color type {:?}", info.color_type)),
+        _ => Err(anyhow!("Unsupported color type {:?}", info.color_type)),
     }
 }
 
@@ -128,7 +126,7 @@ impl FrameReader {
         let layer_prefix = frame_info.layers.iter()
             .find(|x| x.0 == layer)
             .map(|x| &x.1)
-            .ok_or_else(|| format_err!("No layer {}", layer))?;
+            .ok_or_else(|| anyhow!("No layer {}", layer))?;
         let multi_frame_image = frame_info.multi_frame_images.iter()
             .filter(|x| x.layer == layer)
             .find(|x| frame >= x.first_frame && frame < x.first_frame + x.frame_count);
@@ -143,9 +141,9 @@ impl FrameReader {
         };
         if !cached_file_ok {
             let file = File::open(&filename)
-                .with_context(|_| format!("Unable to open {}", filename.to_string_lossy()))?;
+                .with_context(|| format!("Unable to open {}", filename.to_string_lossy()))?;
             let image = load_png(BufReader::new(file))
-                .with_context(|_| format!("Unable to load PNG {}", filename.to_string_lossy()))?;
+                .with_context(|| format!("Unable to load PNG {}", filename.to_string_lossy()))?;
             self.current_file = Some((image, filename));
         }
         let image = self.current_file.as_mut().map(|x| &mut x.0).unwrap();
@@ -153,7 +151,7 @@ impl FrameReader {
             let index = frame - multi_frame.first_frame;
             let frames_per_row = image.width() / multi_frame.frame_width;
             if frames_per_row * multi_frame.frame_width != image.width() {
-                return Err(format_err!(
+                return Err(anyhow!(
                     "Image width {} not multiple of frame width {}",
                     image.width(), multi_frame.frame_width,
                 ));
@@ -275,7 +273,7 @@ pub fn import_frames<F: Fn(f32)>(
             let _ = std::fs::create_dir_all(parent);
         }
         let mut file = std::fs::File::create(grp_path)
-            .with_context(|_| format!("Couldn't create {}", grp_path.display()))?;
+            .with_context(|| format!("Couldn't create {}", grp_path.display()))?;
         let width = u16::try_from(width)
             .context("Sprite dimensions too large")?;
         let height = u16::try_from(height)

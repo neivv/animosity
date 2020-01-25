@@ -4,12 +4,12 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use byteorder::{ReadBytesExt, LE};
-use failure::{Error, ResultExt};
 
 use crate::anim::{self, SpriteValues};
 use crate::ddsgrp;
-use crate::SpriteType;
+use crate::{Error, SpriteType};
 
 pub struct Files {
     sprites: Vec<SpriteFiles>,
@@ -117,11 +117,11 @@ impl<'a> File<'a> {
     pub fn texture(&self, layer: usize) -> Result<anim::RgbaTexture, Error> {
         if let Some(ref tex) = self.textures {
             let tex = tex.get(layer).and_then(|x| x.as_ref())
-                .ok_or_else(|| format_err!("No texture for layer {}", layer))?;
+                .ok_or_else(|| anyhow!("No texture for layer {}", layer))?;
             return Ok(anim::read_texture(Cursor::new(&tex.1), &tex.0)?);
         }
         if let Some(ref tex) = self.grp_textures {
-            let tex = tex.get(layer).ok_or_else(|| format_err!("No frame {}", layer))?;
+            let tex = tex.get(layer).ok_or_else(|| anyhow!("No frame {}", layer))?;
             let anim_tex = tex.0.to_anim_texture_coords();
             return Ok(anim::read_texture(Cursor::new(&tex.1), &anim_tex)?);
         }
@@ -129,10 +129,10 @@ impl<'a> File<'a> {
             Ok(match self.location {
                 FileLocation::Multiple(_, ref mainsd) => mainsd.texture(img_ref as usize, layer)?,
                 FileLocation::Separate(..) => {
-                    return Err(format_err!("Ref in HD sprite"));
+                    return Err(anyhow!("Ref in HD sprite"));
                 }
                 FileLocation::DdsGrp(..) => {
-                    return Err(format_err!("Ref in ddsgrp"));
+                    return Err(anyhow!("Ref in ddsgrp"));
                 }
             })
         } else {
@@ -710,12 +710,12 @@ impl Files {
                     let path = match separate_file_path(&self.sprites, sprite, ty) {
                         Some(s) => s,
                         None => {
-                            return Err(format_err!("No path for sprite {}/{:?}", sprite, ty));
+                            return Err(anyhow!("No path for sprite {}/{:?}", sprite, ty));
                         }
                     };
                     let file = fs::File::open(path)?;
                     let out_path = temp_file_path(&path);
-                    let mut out = fs::File::create(&out_path).with_context(|_| {
+                    let mut out = fs::File::create(&out_path).with_context(|| {
                         format!("Unable to create {}", out_path.to_string_lossy())
                     })?;
                     temp_files.push((out_path, path.into()));
@@ -726,7 +726,7 @@ impl Files {
                         let edit = match *edit {
                             Edit::Ref(_) => {
                                 return Err(
-                                    format_err!(
+                                    anyhow!(
                                         "Ref edit for a separate sprite {}/{:?}",
                                         sprite, ty,
                                     )
@@ -776,7 +776,7 @@ impl Files {
                     let sprite_count = sd.sprites().len() as u16;
                     let layer_names = sd.layer_names();
                     let out_path = temp_file_path(&sd_path);
-                    let mut out = fs::File::create(&out_path).with_context(|_| {
+                    let mut out = fs::File::create(&out_path).with_context(|| {
                         format!("Unable to create {}", out_path.to_string_lossy())
                     })?;
                     sd.write_patched(

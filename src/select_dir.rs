@@ -7,8 +7,6 @@ use std::rc::Rc;
 use app_dirs::{self, AppDataType, AppInfo};
 use serde_json;
 
-use gtk;
-
 use gtk::prelude::*;
 
 use crate::int_entry;
@@ -197,11 +195,11 @@ fn choose_file_dialog(
     dialog.set_select_multiple(false);
     let filter = gtk::FileFilter::new();
     filter.add_pattern(pattern);
-    filter.set_name(name);
+    filter.set_name(Some(name));
     dialog.add_filter(&filter);
     let filter = gtk::FileFilter::new();
     filter.add_pattern("*.*");
-    filter.set_name("All files");
+    filter.set_name(Some("All files"));
     dialog.add_filter(&filter);
     let result: gtk::ResponseType = dialog.run().into();
     let result = if result == gtk::ResponseType::Accept {

@@ -13,7 +13,7 @@ pub trait BoxableWidget {
     fn widget(&self) -> &gtk::Widget;
 }
 
-impl<T: IsA<gtk::Widget> + gtk::Cast> BoxableWidget for T {
+impl<T: IsA<gtk::Widget> + glib::object::Cast> BoxableWidget for T {
     fn widget(&self) -> &gtk::Widget {
         self.upcast_ref()
     }

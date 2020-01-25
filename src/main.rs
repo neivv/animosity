@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[macro_use] extern crate failure;
+#[macro_use] extern crate anyhow;
 #[macro_use] extern crate glium;
 #[macro_use] extern crate log;
 
@@ -30,9 +30,9 @@ use std::rc::Rc;
 use gio::prelude::*;
 use gtk::prelude::*;
 
+use anyhow::Error;
 use cgmath::conv::array4x4;
 use cgmath::{Matrix4, vec4};
-use failure::{Error};
 use glium::backend::glutin::headless::Headless;
 use glium::framebuffer::SimpleFrameBuffer;
 use glium::index::{IndexBuffer, PrimitiveType};
@@ -83,9 +83,10 @@ fn init_panic_handler() {
             None,
             gtk::DialogFlags::MODAL,
             gtk::MessageType::Error,
-            gtk::ButtonsType::Ok,
+            gtk::ButtonsType::None,
             &msg,
         );
+        dialog.add_button("Ok", gtk::ResponseType::Ok);
         dialog.set_title("Crash");
         dialog.run();
         dialog.destroy();
@@ -99,7 +100,7 @@ fn main() {
     }
     let _ = init_log();
     let name = format!("animosity.pid_{}", std::process::id());
-    let app = gtk::Application::new(&*name, gio::ApplicationFlags::empty())
+    let app = gtk::Application::new(Some(&*name), gio::ApplicationFlags::empty())
         .unwrap_or_else(|e| panic!("Couldn't create app: {}", e));
     app.connect_startup(|app| {
         let ui = create_ui(app);
@@ -182,7 +183,7 @@ struct ScrolledList {
 
 impl ScrolledList {
     fn new() -> ScrolledList {
-        let store = gtk::ListStore::new(&[gtk::Type::String]);
+        let store = gtk::ListStore::new(&[glib::Type::String]);
         let list = gtk::TreeView::new_with_model(&store);
         let col = gtk::TreeViewColumn::new();
         let renderer = gtk::CellRendererText::new();
@@ -712,8 +713,7 @@ impl SpriteInfo {
                         width as i32 * 4,
                     ).expect("Couldn't create cairo image surface");
                     // Could recycle the surface?
-                    let pattern = cairo::SurfacePattern::create(&surface);
-                    cairo.set_source(&cairo::Pattern::SurfacePattern(pattern));
+                    cairo.set_source_surface(&surface, 0.0, 0.0);
                     cairo.paint();
                 }
                 Err(e) => {
@@ -767,7 +767,7 @@ impl SpriteInfo {
         let single_image_check = if is_anim {
             SavedCheckbox::new("frame_export_single_image", "One image per layer")
         } else {
-            SavedCheckbox::new("frame_export_single_image", "One image")
+            SavedCheckbox::new("frame_export_single_image", "Single image")
         };
 
         let mut checkboxes = Vec::with_capacity(layer_names.len());
@@ -962,13 +962,7 @@ impl SpriteInfo {
                             window.destroy();
                         }
                         Err(e) => {
-                            use std::fmt::Write;
-                            let mut msg = format!("Unable to export frames:\n");
-                            for c in e.iter_chain() {
-                                writeln!(msg, "{}", c).unwrap();
-                            }
-                            // Remove last newline
-                            msg.pop();
+                            let msg = format!("Unable to export frames: {:?}", e);
                             error_msg_box(&window, &msg);
                         }
                     }
@@ -1179,7 +1173,7 @@ impl SpriteInfo {
             param_ty: Option<&str>,
             fun: F,
         ) -> gio::SimpleAction
-        where F: Fn(&gio::SimpleAction, &Option<glib::Variant>) + 'static
+        where F: Fn(&gio::SimpleAction, Option<&glib::Variant>) + 'static
         {
             let param_ty = param_ty.map(|x| {
                 glib::VariantTy::new(x)
@@ -1211,7 +1205,7 @@ impl SpriteInfo {
         });
         let s = this.clone();
         action(group, "select_layer", true, Some("u"), move |_, param| {
-            if let Some(layer) = param.as_ref().and_then(|x| x.get::<u32>()) {
+            if let Some(layer) = param.and_then(|x| x.get::<u32>()) {
                 s.selected_layer.store(layer as usize, Ordering::SeqCst);
                 {
                     let tex_id = s.tex_id();
@@ -1232,7 +1226,7 @@ impl SpriteInfo {
         });
         let s = this.clone();
         action(group, "edit_enable_ref", true, Some("b"), move |_, param| {
-            if let Some(value) = param.as_ref().and_then(|x| x.get::<bool>()) {
+            if let Some(value) = param.and_then(|x| x.get::<bool>()) {
                 s.set_ref_enabled(value);
             }
         });
@@ -1242,7 +1236,7 @@ impl SpriteInfo {
         });
         let s = this.clone();
         action(group, "edit_ref_img", true, Some("u"), move |_, param| {
-            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+            if let Some(value) = param.and_then(|x| x.get::<u32>()) {
                 s.set_ref_img(value);
             }
         });
@@ -1254,7 +1248,7 @@ impl SpriteInfo {
         });
         let s = this.clone();
         action(group, "edit_unk2", true, Some("u"), move |_, param| {
-            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+            if let Some(value) = param.and_then(|x| x.get::<u32>()) {
                 s.update_active_file(|x, _| {
                     x.unk2 = value as u16;
                 });
@@ -1262,7 +1256,7 @@ impl SpriteInfo {
         });
         let s = this.clone();
         action(group, "edit_unk3a", true, Some("u"), move |_, param| {
-            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+            if let Some(value) = param.and_then(|x| x.get::<u32>()) {
                 s.update_active_file(|x, _| {
                     x.width = value as u16;
                 });
@@ -1270,7 +1264,7 @@ impl SpriteInfo {
         });
         let s = this.clone();
         action(group, "edit_unk3b", true, Some("u"), move |_, param| {
-            if let Some(value) = param.as_ref().and_then(|x| x.get::<u32>()) {
+            if let Some(value) = param.and_then(|x| x.get::<u32>()) {
                 s.update_active_file(|x, _| {
                     x.height = value as u16;
                 });
@@ -1605,13 +1599,7 @@ fn save() -> Result<(), Error> {
         files.save()
     };
     if let Err(ref e) = result {
-        use std::fmt::Write;
-        let mut msg = format!("Unable to save:\n");
-        for c in e.iter_chain() {
-            writeln!(msg, "{}", c).unwrap();
-        }
-        // Remove last newline
-        msg.pop();
+        let msg = format!("Unable to save: {:?}", e);
         ui().message(&msg);
     } else {
         let ui = ui();
@@ -1648,11 +1636,11 @@ fn check_unsaved_files() -> bool {
         let result = dialog.run();
         dialog.destroy();
         match result {
-            1 => {
+            gtk::ResponseType::Other(1) => {
                 let result = save();
                 result.is_ok()
             }
-            2 => true,
+            gtk::ResponseType::Other(2) => true,
             _ => false,
         }
     } else {
@@ -1662,7 +1650,7 @@ fn check_unsaved_files() -> bool {
 
 fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
     fn action<F>(app: &gtk::Application, name: &str, enabled: bool, fun: F) -> gio::SimpleAction
-    where F: Fn(&gio::SimpleAction, &Option<glib::Variant>) + 'static
+    where F: Fn(&gio::SimpleAction, Option<&glib::Variant>) + 'static
     {
         let action = gio::SimpleAction::new(name, None);
         action.set_enabled(enabled);
@@ -1783,13 +1771,7 @@ fn open(filename: &Path) {
             enable_file_actions(&ui.app);
         }
         Err(e) => {
-            use std::fmt::Write;
-            let mut msg = format!("Unable to open file:\n");
-            for c in e.iter_chain() {
-                writeln!(msg, "{}", c).unwrap();
-            }
-            // Remove last newline
-            msg.pop();
+            let msg = format!("Unable to open file: {:?}", e);
             ui.message(&msg);
         }
     }
@@ -1811,11 +1793,11 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     filter.add_pattern("*.anim");
     filter.add_pattern("*.dds.grp");
     filter.add_pattern("*.dds.vr4");
-    filter.set_name("Valid files");
+    filter.set_name(Some("Valid files"));
     dialog.add_filter(&filter);
     let filter = gtk::FileFilter::new();
     filter.add_pattern("*.*");
-    filter.set_name("All files");
+    filter.set_name(Some("All files"));
     dialog.add_filter(&filter);
     //dialog.add_button("Open", gtk::ResponseType::Accept.into());
     //dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
@@ -1913,9 +1895,10 @@ fn info_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
         Some(window),
         gtk::DialogFlags::MODAL,
         gtk::MessageType::Info,
-        gtk::ButtonsType::Ok,
+        gtk::ButtonsType::None,
         msg.as_ref(),
     );
+    dialog.add_button("Ok", gtk::ResponseType::Ok);
     dialog.run();
     dialog.destroy();
 }
@@ -1925,9 +1908,10 @@ fn error_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
         Some(window),
         gtk::DialogFlags::MODAL,
         gtk::MessageType::Error,
-        gtk::ButtonsType::Ok,
+        gtk::ButtonsType::None,
         msg.as_ref(),
     );
+    dialog.add_button("Ok", gtk::ResponseType::Ok);
     dialog.run();
     dialog.destroy();
 }
