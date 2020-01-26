@@ -34,6 +34,10 @@ serde = "1.0.37"
 serde_derive = "1.0.37"
 serde_json = "1.0.13"
 
+# Not popular (known, widely used) so more skeptical but at least 1.0.0 is good
+# Also port of a C++ library so likely not updated
+squish = "=1.0.0"
+
 [dependencies.gtk]
 version = "0.8"
 features = ["v3_22_20"]

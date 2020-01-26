@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io::{Write, Seek, SeekFrom};
-use std::mem;
 use std::rc::Rc;
 
 use anyhow::Context;
@@ -461,62 +460,51 @@ fn encode_dxt5(
     let height = ((height - 1) | 3) + 1;
 
     let mut out = vec![0; (width * height) as usize];
+    let mut tmp_buf = Vec::new();
     for (_, f, place) in frames {
         let &(ref frame, ref offset) = &f.frames[layer];
         if frame.data.is_empty() {
             continue;
         }
 
-        let x_pixel = (place.x + offset.0 as u32) / scale;
-        let y_pixel = (place.y + offset.1 as u32) / scale;
+        let x_block = (place.x + offset.0 as u32) / scale / 4;
+        let y_block = (place.y + offset.1 as u32) / scale / 4;
         let frame_width = frame.width / scale;
         let frame_height = frame.height / scale;
-        let last_x = x_pixel + frame_width;
-        let last_y = y_pixel + frame_height;
-        assert!(
-            last_x <= width,
-            "Frame width past image bounds: {} {}, {}", x_pixel, frame_width, width
-        );
-        assert!(
-            last_y <= height,
-            "Frame height past image bounds: {} {}, {}", y_pixel, frame_height, height
+        let width_aligned = match frame_width & 3 == 0 {
+            true => frame_width,
+            false => (frame_width | 3) + 1,
+        };
+        let height_aligned = match frame_height & 3 == 0 {
+            true => frame_height,
+            false => (frame_height | 3) + 1,
+        };
+
+        tmp_buf.clear();
+        tmp_buf.resize((width_aligned * height_aligned) as usize, 0);
+        squish::Format::Bc3.compress(
+            &frame.data,
+            frame_width as usize,
+            frame_height as usize,
+            squish::Params {
+                algorithm: squish::Algorithm::IterativeClusterFit,
+                weights: squish::COLOUR_WEIGHTS_PERCEPTUAL,
+                weigh_colour_by_alpha: true,
+            },
+            &mut tmp_buf,
         );
 
-        let mut y = y_pixel;
-        while y < last_y {
-            let in_y = y - y_pixel;
-            let y_block = y / 4;
-            let mut x = x_pixel;
-            while x < last_x {
-                let in_x = x - x_pixel;
-                let x_block = x / 4;
-                let mut block = [[0; 4]; 16];
-                for block_y in (y & 3)..(last_y - y).min(4) {
-                    for block_x in (x & 3)..(last_x - x).min(4) {
-                        let src_y = in_y + block_y - (y & 3);
-                        let src_x = in_x + block_x - (x & 3);
-                        let input_pos = (src_y * frame_width + src_x) as usize * 4;
-                        let input_slice = &frame.data[input_pos..input_pos + 4];
-                        block[(block_y * 4 + block_x) as usize].copy_from_slice(input_slice);
-                    }
-                }
-                let has_far_alpha = block.iter().any(|x| x[3] < 16) &&
-                    block.iter().any(|x| x[3] >= 240);
-                let alpha = if has_far_alpha {
-                    dxt5_alpha5(&block)
-                } else {
-                    dxt5_alpha7(&block)
-                };
-                let (colors, lookup) = colors_dxt5(&block);
-                let out_pos = (y_block * width / 4 + x_block) as usize * 16;
-                let mut out = &mut out[out_pos..out_pos + 16];
-                out.write_u64::<LE>(alpha).unwrap();
-                out.write_u32::<LE>(colors).unwrap();
-                out.write_u32::<LE>(lookup).unwrap();
-
-                x = (x | 3) + 1;
-            }
-            y = (y | 3) + 1;
+        let mut y = y_block;
+        let mut in_y = 0;
+        let block_size_bytes = 16;
+        let in_stride_bytes = (width_aligned / 4) * block_size_bytes;
+        while in_y < frame_height / 4 {
+            let out_pos = ((y * (width / 4) + x_block) * block_size_bytes) as usize;
+            let in_pos = (in_y * in_stride_bytes) as usize;
+            (&mut out[out_pos..][..in_stride_bytes as usize])
+                .copy_from_slice(&tmp_buf[in_pos..][..in_stride_bytes as usize]);
+            y += 1;
+            in_y += 1;
         }
     }
 
@@ -538,59 +526,51 @@ fn encode_dxt1(
     let height = ((height - 1) | 3) + 1;
 
     let mut out = vec![0; (width * height) as usize / 2];
+    let mut tmp_buf = Vec::new();
     for (_, f, place) in frames {
         let &(ref frame, ref offset) = &f.frames[layer];
         if frame.data.is_empty() {
             continue;
         }
 
-        let x_pixel = (place.x + offset.0 as u32) / scale;
-        let y_pixel = (place.y + offset.1 as u32) / scale;
+        let x_block = (place.x + offset.0 as u32) / scale / 4;
+        let y_block = (place.y + offset.1 as u32) / scale / 4;
         let frame_width = frame.width / scale;
         let frame_height = frame.height / scale;
-        let last_x = x_pixel + frame_width;
-        let last_y = y_pixel + frame_height;
-        assert!(
-            last_x <= width,
-            "Frame width past image bounds: {} {}, {}", x_pixel, frame_width, width
-        );
-        assert!(
-            last_y <= height,
-            "Frame height past image bounds: {} {}, {}", y_pixel, frame_height, height
+        let width_aligned = match frame_width & 3 == 0 {
+            true => frame_width,
+            false => (frame_width | 3) + 1,
+        };
+        let height_aligned = match frame_height & 3 == 0 {
+            true => frame_height,
+            false => (frame_height | 3) + 1,
+        };
+
+        tmp_buf.clear();
+        tmp_buf.resize((width_aligned * height_aligned / 2) as usize, 0);
+        squish::Format::Bc1.compress(
+            &frame.data,
+            frame_width as usize,
+            frame_height as usize,
+            squish::Params {
+                algorithm: squish::Algorithm::IterativeClusterFit,
+                weights: squish::COLOUR_WEIGHTS_PERCEPTUAL,
+                weigh_colour_by_alpha: false,
+            },
+            &mut tmp_buf,
         );
 
-        let mut y = y_pixel;
-        while y < last_y {
-            let in_y = y - y_pixel;
-            let y_block = y / 4;
-            let mut x = x_pixel;
-            while x < last_x {
-                let in_x = x - x_pixel;
-                let x_block = x / 4;
-                let mut block = [[0; 4]; 16];
-                for block_y in (y & 3)..(last_y - y).min(4) {
-                    for block_x in (x & 3)..(last_x - x).min(4) {
-                        let src_y = in_y + block_y - (y & 3);
-                        let src_x = in_x + block_x - (x & 3);
-                        let input_pos = (src_y * frame_width + src_x) as usize * 4;
-                        let input_slice = &frame.data[input_pos..input_pos + 4];
-                        block[(block_y * 4 + block_x) as usize].copy_from_slice(input_slice);
-                    }
-                }
-                let has_alpha = block.iter().any(|x| x[3] < 128);
-                let (colors, lookup) = if has_alpha {
-                    colors_dxt1_alpha(&block)
-                } else {
-                    colors_dxt1_no_alpha(&block)
-                };
-                let out_pos = (y_block * width / 4 + x_block) as usize * 8;
-                let mut out = &mut out[out_pos..out_pos + 8];
-                out.write_u32::<LE>(colors).unwrap();
-                out.write_u32::<LE>(lookup).unwrap();
-
-                x = (x | 3) + 1;
-            }
-            y = (y | 3) + 1;
+        let mut y = y_block;
+        let mut in_y = 0;
+        let block_size_bytes = 8;
+        let in_stride_bytes = (width_aligned / 4) * block_size_bytes;
+        while in_y < frame_height / 4 {
+            let out_pos = ((y * (width / 4) + x_block) * block_size_bytes) as usize;
+            let in_pos = (in_y * in_stride_bytes) as usize;
+            (&mut out[out_pos..][..in_stride_bytes as usize])
+                .copy_from_slice(&tmp_buf[in_pos..][..in_stride_bytes as usize]);
+            y += 1;
+            in_y += 1;
         }
     }
 
@@ -599,449 +579,6 @@ fn encode_dxt1(
     let mut dds_out = Vec::new();
     dds.write(&mut dds_out).unwrap();
     dds_out
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-struct SquaredColor(i32);
-
-fn square_color(val: (i32, i32, i32)) -> SquaredColor {
-    SquaredColor(val.0 * val.0 + val.1 * val.1 + val.2 * val.2)
-}
-
-fn square_distance(color: (i32, i32, i32), compare_sq: SquaredColor) -> i32 {
-    (compare_sq.0 - (color.0 * color.0 + color.1 * color.1 + color.2 * color.2)).abs()
-}
-
-fn color_towards(src: i32, dest: i32, fraction: i32) -> i32 {
-    src - (src - dest) / fraction
-}
-
-fn distances_sum(block: &[[u8; 4]; 16], squared: &[SquaredColor; 3]) -> i32 {
-    let mut sum = 0i32;
-    for x in block {
-        if x[3] >= 128 {
-            let color = (x[0] as i32, x[1] as i32, x[2] as i32);
-            let distances = [
-                square_distance(color, squared[0]),
-                square_distance(color, squared[1]),
-                square_distance(color, squared[2]),
-            ];
-            sum += distances.iter().cloned().min().unwrap();
-        }
-    }
-    sum
-}
-
-fn distances_sum4(block: &[[u8; 4]; 16], squared: &[SquaredColor; 4]) -> i32 {
-    let mut sum = 0i32;
-    for x in block {
-        let color = (x[0] as i32, x[1] as i32, x[2] as i32);
-        let distances = [
-            square_distance(color, squared[0]),
-            square_distance(color, squared[1]),
-            square_distance(color, squared[2]),
-            square_distance(color, squared[3]),
-        ];
-        sum += distances.iter().cloned().min().unwrap();
-    }
-    sum
-}
-
-#[allow(unused_parens)]
-fn colors_dxt1_alpha(block: &[[u8; 4]; 16]) -> (u32, u32) {
-    // Calculate average of colors,
-    // Calculate furthest color from average,
-    // Calculate furthest color from furthest,
-    // Try two variations for the actual colors.
-    let mut color_sum = (0i32, 0i32, 0i32);
-    let mut nonalpha_pixels = 0;
-    for c in block {
-        if c[3] >= 128 {
-            nonalpha_pixels += 1;
-            color_sum.0 += c[0] as i32;
-            color_sum.1 += c[1] as i32;
-            color_sum.2 += c[2] as i32;
-        }
-    }
-    if nonalpha_pixels == 0 {
-        return (!0, !0);
-    }
-    let average_color = (
-        color_sum.0 / nonalpha_pixels,
-        color_sum.1 / nonalpha_pixels,
-        color_sum.2 / nonalpha_pixels,
-    );
-    let average_squared = square_color(average_color);
-
-    let furthest_color = |compare_squared: SquaredColor| {
-        let mut furthest_color = (0, 0, 0);
-        let mut furthest_distance = 0;
-
-        for c in block {
-            if c[3] >= 128 {
-                let distance = (compare_squared.0 - (
-                    (c[0] as i32 * c[0] as i32) +
-                    (c[1] as i32 * c[1] as i32) +
-                    (c[2] as i32 * c[2] as i32)
-                )).abs();
-                if distance > furthest_distance {
-                    furthest_distance = distance;
-                    furthest_color = (c[0] as i32, c[1] as i32, c[2] as i32);
-                }
-            }
-        }
-        furthest_color
-    };
-    let first = furthest_color(average_squared);
-    let first_squared = square_color(first);
-    let second = furthest_color(first_squared);
-    let second_squared = square_color(second);
-    let average = (
-        first.0 - (first.0 - second.0) / 2,
-        first.1 - (first.1 - second.1) / 2,
-        first.2 - (first.2 - second.2) / 2,
-    );
-    let average_squared = square_color(average);
-    let (first, second) = {
-        let variant1_sum = distances_sum(
-            block,
-            &[first_squared, second_squared, average_squared],
-        );
-        let variant2_first = (
-            color_towards(first.0 as i32, second.0 as i32, 5),
-            color_towards(first.1 as i32, second.1 as i32, 5),
-            color_towards(first.2 as i32, second.2 as i32, 5),
-        );
-        let variant2_first_squared = square_color(variant2_first);
-        let variant2_second = (
-            color_towards(second.0 as i32, first.0 as i32, 5),
-            color_towards(second.1 as i32, first.1 as i32, 5),
-            color_towards(second.2 as i32, first.2 as i32, 5),
-        );
-        let variant2_second_squared = square_color(variant2_second);
-        let variant2_sum = distances_sum(
-            block,
-            &[variant2_first_squared, variant2_second_squared, average_squared],
-        );
-        if variant1_sum <= variant2_sum {
-            (first, second)
-        } else {
-            (variant2_first, variant2_second)
-        }
-    };
-    let mut first_16bit = (
-        ((first.0 + 3) & !0x7).min(255),
-        ((first.1 + 1) & !0x3).min(255),
-        ((first.2 + 3) & !0x7).min(255),
-    );
-    let mut second_16bit = (
-        ((second.0 + 3) & !0x7).min(255),
-        ((second.1 + 1) & !0x3).min(255),
-        ((second.2 + 3) & !0x7).min(255),
-    );
-    if first_16bit == second_16bit {
-        // Could be better logic, now just toggles a green bit
-        second_16bit.1 ^= 0x4;
-    }
-    let mut first_raw = ((first_16bit.0 & 0xf8) << 8) |
-        ((first_16bit.1 & 0xfc) << 3) |
-        ((first_16bit.2 & 0xf8) >> 3);
-    let mut second_raw = ((second_16bit.0 & 0xf8) << 8) |
-        ((second_16bit.1 & 0xfc) << 3) |
-        ((second_16bit.2 & 0xf8) >> 3);
-    if first_raw > second_raw {
-        mem::swap(&mut first_raw, &mut second_raw);
-        mem::swap(&mut first_16bit, &mut second_16bit);
-    }
-    let average = (
-        (first_16bit.0 + second_16bit.0) / 2,
-        (first_16bit.1 + second_16bit.1) / 2,
-        (first_16bit.2 + second_16bit.2) / 2,
-    );
-    let squared = [
-        square_color(first_16bit),
-        square_color(second_16bit),
-        square_color(average),
-    ];
-    let mut lookup = 0;
-    for pixel in block.iter().rev() {
-        lookup = lookup << 2;
-        if pixel[3] < 128 {
-            lookup |= 3;
-        } else {
-            let color = (pixel[0] as i32, pixel[1] as i32, pixel[2] as i32);
-            let distances = [
-                square_distance(color, squared[0]),
-                square_distance(color, squared[1]),
-                square_distance(color, squared[2]),
-            ];
-            let index = distances.iter().enumerate()
-                .min_by_key(|(_i, &x)| x)
-                .unwrap().0 as u32;
-            lookup |= index;
-        }
-    }
-    (first_raw as u32 | ((second_raw as u32) << 16), lookup)
-}
-
-#[allow(unused_parens)]
-fn colors_dxt1_no_alpha(block: &[[u8; 4]; 16]) -> (u32, u32) {
-    // Calculate average of colors,
-    // Calculate furthest color from average,
-    // Calculate furthest color from furthest,
-    // Try two variations for the actual colors.
-    let mut color_sum = (0i32, 0i32, 0i32);
-    for c in block {
-        color_sum.0 += c[0] as i32;
-        color_sum.1 += c[1] as i32;
-        color_sum.2 += c[2] as i32;
-    }
-    let average_color = (
-        color_sum.0 / 16,
-        color_sum.1 / 16,
-        color_sum.2 / 16,
-    );
-    let average_squared = square_color(average_color);
-
-    let furthest_color = |compare_squared: SquaredColor| {
-        let mut furthest_color = (0, 0, 0);
-        let mut furthest_distance = 0;
-
-        for c in block {
-            let distance = (compare_squared.0 - (
-                (c[0] as i32 * c[0] as i32) +
-                (c[1] as i32 * c[1] as i32) +
-                (c[2] as i32 * c[2] as i32)
-            )).abs();
-            if distance > furthest_distance {
-                furthest_distance = distance;
-                furthest_color = (c[0] as i32, c[1] as i32, c[2] as i32);
-            }
-        }
-        furthest_color
-    };
-    let first = furthest_color(average_squared);
-    let first_squared = square_color(first);
-    let second = furthest_color(first_squared);
-    let second_squared = square_color(second);
-    let first_mid = (
-        first.0 - (first.0 - second.0) / 3,
-        first.1 - (first.1 - second.1) / 3,
-        first.2 - (first.2 - second.2) / 3,
-    );
-    let second_mid = (
-        first.0 - (first.0 - second.0) / 3 * 2,
-        first.1 - (first.1 - second.1) / 3 * 2,
-        first.2 - (first.2 - second.2) / 3 * 2,
-    );
-    let (first, second) = {
-        let variant1_sum = distances_sum4(
-            block,
-            &[first_squared, second_squared, square_color(first_mid), square_color(second_mid)],
-        );
-        let variant2_first = (
-            color_towards(first.0 as i32, second.0 as i32, 6),
-            color_towards(first.1 as i32, second.1 as i32, 6),
-            color_towards(first.2 as i32, second.2 as i32, 6),
-        );
-        let variant2_first_squared = square_color(variant2_first);
-        let variant2_second = (
-            color_towards(second.0 as i32, first.0 as i32, 6),
-            color_towards(second.1 as i32, first.1 as i32, 6),
-            color_towards(second.2 as i32, first.2 as i32, 6),
-        );
-        let variant2_second_squared = square_color(variant2_second);
-        let variant2_first_mid = (
-            variant2_first.0 - (variant2_first.0 - variant2_second.0) / 3,
-            variant2_first.1 - (variant2_first.1 - variant2_second.1) / 3,
-            variant2_first.2 - (variant2_first.2 - variant2_second.2) / 3,
-        );
-        let variant2_second_mid = (
-            variant2_first.0 - (variant2_first.0 - variant2_second.0) / 3 * 2,
-            variant2_first.1 - (variant2_first.1 - variant2_second.1) / 3 * 2,
-            variant2_first.2 - (variant2_first.2 - variant2_second.2) / 3 * 2,
-        );
-        let variant2_sum = distances_sum4(
-            block,
-            &[
-                variant2_first_squared,
-                variant2_second_squared,
-                square_color(variant2_first_mid),
-                square_color(variant2_second_mid),
-            ],
-        );
-        if variant1_sum <= variant2_sum {
-            (first, second)
-        } else {
-            (variant2_first, variant2_second)
-        }
-    };
-    let mut first_16bit = (
-        ((first.0 + 3) & !0x7).min(255),
-        ((first.1 + 1) & !0x3).min(255),
-        ((first.2 + 3) & !0x7).min(255),
-    );
-    let mut second_16bit = (
-        ((second.0 + 3) & !0x7).min(255),
-        ((second.1 + 1) & !0x3).min(255),
-        ((second.2 + 3) & !0x7).min(255),
-    );
-    if first_16bit == second_16bit {
-        // Could be better logic, now just toggles a green bit
-        second_16bit.1 ^= 0x4;
-    }
-    let mut first_raw = ((first_16bit.0 & 0xf8) << 8) |
-        ((first_16bit.1 & 0xfc) << 3) |
-        ((first_16bit.2 & 0xf8) >> 3);
-    let mut second_raw = ((second_16bit.0 & 0xf8) << 8) |
-        ((second_16bit.1 & 0xfc) << 3) |
-        ((second_16bit.2 & 0xf8) >> 3);
-    // First has to be larger
-    if first_raw < second_raw {
-        mem::swap(&mut first_raw, &mut second_raw);
-        mem::swap(&mut first_16bit, &mut second_16bit);
-    }
-    let first_mid = (
-        (first.0 * 2 + second.0) / 3,
-        (first.1 * 2 + second.1) / 3,
-        (first.2 * 2 + second.2) / 3,
-    );
-    let second_mid = (
-        (second.0 * 2 + first.0) / 3,
-        (second.1 * 2 + first.1) / 3,
-        (second.2 * 2 + first.2) / 3,
-    );
-    let squared = [
-        square_color(first_16bit),
-        square_color(second_16bit),
-        square_color(first_mid),
-        square_color(second_mid),
-    ];
-    let mut lookup = 0;
-    for pixel in block.iter().rev() {
-        lookup = lookup << 2;
-        let color = (pixel[0] as i32, pixel[1] as i32, pixel[2] as i32);
-        let distances = [
-            square_distance(color, squared[0]),
-            square_distance(color, squared[1]),
-            square_distance(color, squared[2]),
-            square_distance(color, squared[3]),
-        ];
-        let index = distances.iter().enumerate()
-            .min_by_key(|(_i, &x)| x)
-            .unwrap().0 as u32;
-        lookup |= index;
-    }
-    (first_raw as u32 | ((second_raw as u32) << 16), lookup)
-}
-
-#[allow(unused_parens)]
-fn colors_dxt5(block: &[[u8; 4]; 16]) -> (u32, u32) {
-    colors_dxt1_no_alpha(block)
-}
-
-fn dxt5_alpha5_far(val: u8) -> bool {
-    val < 8 || val >= 248
-}
-
-#[allow(unused_parens)]
-fn dxt5_alpha5(block: &[[u8; 4]; 16]) -> u64 {
-    let mut first = block.iter().filter_map(|x| {
-        if !dxt5_alpha5_far(x[3]) {
-            Some(x[3])
-        } else {
-            None
-        }
-    }).min().unwrap_or(0);
-    let mut second = block.iter().filter_map(|x| {
-        if !dxt5_alpha5_far(x[3]) {
-            Some(x[3])
-        } else {
-            None
-        }
-    }).max().unwrap_or(0);
-    if first == second {
-        second ^= 8;
-    }
-    // First has to be smaller
-    if first >= second {
-        mem::swap(&mut first, &mut second);
-    }
-    let first_f32 = first as f32;
-    let second_f32 = second as f32;
-    let alphas = [
-        first,
-        second,
-        (first_f32 * (4.0 / 5.0) + second_f32 / 5.0) as u8,
-        (first_f32 * (3.0 / 5.0) + second_f32 * (2.0 / 5.0)) as u8,
-        (first_f32 * (2.0 / 5.0) + second_f32 * (3.0 / 5.0)) as u8,
-        (first_f32 / 5.0 + second_f32 * (4.0 / 5.0)) as u8,
-    ];
-    let mut lookup = 0u64;
-    for pixel in block.iter().rev() {
-        lookup = lookup << 3;
-        let alpha = pixel[3];
-        let distances = [
-            (alpha as i32 - alphas[0] as i32).abs(),
-            (alpha as i32 - alphas[1] as i32).abs(),
-            (alpha as i32 - alphas[2] as i32).abs(),
-            (alpha as i32 - alphas[3] as i32).abs(),
-            (alpha as i32 - alphas[4] as i32).abs(),
-            (alpha as i32 - alphas[5] as i32).abs(),
-            alpha as i32,
-            255i32 - alpha as i32,
-        ];
-        let index = distances.iter().enumerate()
-            .min_by_key(|(_i, &x)| x)
-            .unwrap().0 as u64;
-        lookup |= index;
-    }
-    (lookup << 16) | ((second as u64) << 8) | (first as u64)
-}
-
-#[allow(unused_parens)]
-fn dxt5_alpha7(block: &[[u8; 4]; 16]) -> u64 {
-    let mut first = block.iter().map(|x| x[3]).min().unwrap_or(0);
-    let mut second = block.iter().map(|x| x[3]).max().unwrap_or(0);
-    if first == second {
-        second ^= 8;
-    }
-    // First has to be larger
-    if first < second {
-        mem::swap(&mut first, &mut second);
-    }
-    let first_f32 = first as f32;
-    let second_f32 = second as f32;
-    let alphas = [
-        first,
-        second,
-        (first_f32 * (6.0 / 7.0) + second_f32 / 7.0) as u8,
-        (first_f32 * (5.0 / 7.0) + second_f32 * (2.0 / 7.0)) as u8,
-        (first_f32 * (4.0 / 7.0) + second_f32 * (3.0 / 7.0)) as u8,
-        (first_f32 * (3.0 / 7.0) + second_f32 * (4.0 / 7.0)) as u8,
-        (first_f32 * (2.0 / 7.0) + second_f32 * (5.0 / 7.0)) as u8,
-        (first_f32 / 7.0 + second_f32 * (6.0 / 7.0)) as u8,
-    ];
-    let mut lookup = 0u64;
-    for pixel in block.iter().rev() {
-        lookup = lookup << 3;
-        let alpha = pixel[3];
-        let distances = [
-            (alpha as i32 - alphas[0] as i32).abs(),
-            (alpha as i32 - alphas[1] as i32).abs(),
-            (alpha as i32 - alphas[2] as i32).abs(),
-            (alpha as i32 - alphas[3] as i32).abs(),
-            (alpha as i32 - alphas[4] as i32).abs(),
-            (alpha as i32 - alphas[5] as i32).abs(),
-            (alpha as i32 - alphas[6] as i32).abs(),
-            (alpha as i32 - alphas[7] as i32).abs(),
-        ];
-        let index = distances.iter().enumerate()
-            .min_by_key(|(_i, &x)| x)
-            .unwrap().0 as u64;
-        lookup |= index;
-    }
-    (lookup << 16) | ((second as u64) << 8) | (first as u64)
 }
 
 pub fn encode(rgba: &[u8], width: u32, height: u32, format: anim::TextureFormat) -> Vec<u8> {
