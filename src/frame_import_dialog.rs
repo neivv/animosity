@@ -353,6 +353,34 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             let frame_count = if hd2_fi.is_some() { 2 } else { 1 } *
                 frame_info.layers.len() as u32 * frame_info.frame_count;
 
+            // Hackfix: If importing SD and there's a layer named teamcolor somewhere
+            // else than index 1, move it to index 1 (Since HD sprites usually have it
+            // at index 2)
+            let frame_info = if tex_id.1 == SpriteType::Sd {
+                let mut frame_info = frame_info;
+                let teamcolor_index = frame_info.layers.iter()
+                    .position(|x| x.0 > 1 && x.1.ends_with("teamcolor"))
+                    .filter(|&pos| pos > 1);
+                if let Some(index) = teamcolor_index {
+                    frame_info.layers = vec![
+                        frame_info.layers[0].clone(),
+                        frame_info.layers[index].clone(),
+                    ];
+                    frame_info.layers[0].0 = 0;
+                    frame_info.layers[1].0 = 1;
+                    for mfi in &mut frame_info.multi_frame_images {
+                        if mfi.layer == 1 {
+                            mfi.layer = 2;
+                        } else if mfi.layer == index as u32 {
+                            mfi.layer = 1;
+                        }
+                    }
+                }
+                frame_info
+            } else {
+                frame_info
+            };
+
             let active_grp_radio_index = sd_anim_grp_radios.iter().position(|x| x.get_active());
             let grp_filename = if let Some(index) = active_grp_radio_index {
                 set_config_entry("sd_grp_last_selected", &index.to_string());
