@@ -113,19 +113,19 @@ quick_error! {
             display("Couldn't read textures for image {}: {}", image, e)
         }
         TooManyLayers {
-            description("Too many layers")
+            display("Too many layers")
         }
         Eof {
-            description("Reached end of input")
+            display("Reached end of input")
         }
         NoSpriteData {
-            description("Sprite does not exist")
+            display("Sprite does not exist")
         }
         NoLayer {
-            description("Layer does not exist")
+            display("Layer does not exist")
         }
         NoFrame {
-            description("Frame does not exist")
+            display("Frame does not exist")
         }
         Format(msg: String) {
             description("Invalid data")
@@ -141,7 +141,7 @@ quick_error! {
             display("DDS error on {}: {}", ctx, e)
         }
         NoDxtFormat {
-            description("No DXT format in DDS")
+            display("No DXT format in DDS")
         }
         UnsupportedDdsFormat(format: ddsfile::D3DFormat) {
             description("Unsupported DDS format")
