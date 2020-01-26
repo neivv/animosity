@@ -1,10 +1,14 @@
+use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::Context;
 use image::{GenericImageView, RgbaImage};
+use rayon::prelude::*;
 
 use crate::anim;
 use crate::anim_encoder;
@@ -13,7 +17,7 @@ use crate::files;
 use crate::frame_info::{FrameInfo};
 use crate::{SpriteType, Error};
 
-pub fn import_frames_grp<F: Fn(f32)>(
+pub fn import_frames_grp<F: Fn(f32) + Sync>(
     files: &mut files::Files,
     frame_info: &FrameInfo,
     dir: &Path,
@@ -23,30 +27,90 @@ pub fn import_frames_grp<F: Fn(f32)>(
     scale: u8,
     report_progress: F,
 ) -> Result<(), Error> {
-    let mut frames = Vec::new();
-    let mut reader = FrameReader::new(dir.into());
-    for i in 0..frame_info.frame_count {
-        let (data, width, height) = reader.read_frame(frame_info, 0, i, frame_scale)
-            .with_context(|| format!("Reading frame {}", i))?;
-        let data = anim_encoder::encode(&data, width, height, format);
-        frames.push((ddsgrp::Frame {
-            unknown: 0,
-            width: u16::try_from(width)
-                .map_err(|_| anyhow!("Frame {} width too large", i))?,
-            height: u16::try_from(height)
-                .map_err(|_| anyhow!("Frame {} width too large", i))?,
-            size: data.len() as u32,
-            offset: !0,
-        }, data));
-        report_progress((i + 1) as f32 / frame_info.frame_count as f32);
-    }
+    let image_data_cache = Mutex::new(ImageDataCache::default());
+    let tls = thread_local::ThreadLocal::new();
+    let step = AtomicUsize::new(1);
+    let step_count = frame_info.frame_count as f32;
+
+    let mut frames = (0..frame_info.frame_count).into_par_iter()
+        .map(|i| {
+            let tls_cache = tls.get_or(|| RefCell::new(TlsImageDataCache::default()));
+            let mut tls_cache = tls_cache.borrow_mut();
+            let mut frame_reader =
+                FrameReader::new(dir, &image_data_cache, &mut tls_cache);
+
+            let (data, width, height) = frame_reader.read_frame(frame_info, 0, i, frame_scale)?;
+            let data = anim_encoder::encode(&data, width, height, format);
+            let step = step.fetch_add(1, Ordering::Relaxed);
+            report_progress((step as f32) / step_count);
+            let frame = ddsgrp::Frame {
+                unknown: 0,
+                width: u16::try_from(width)
+                    .map_err(|_| anyhow!("Frame {} width too large", i))?,
+                height: u16::try_from(height)
+                    .map_err(|_| anyhow!("Frame {} width too large", i))?,
+                size: data.len() as u32,
+                offset: !0,
+            };
+            Ok((i, (frame, data)))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    frames.sort_by_key(|x| x.0);
+    let frames = frames.into_iter().map(|x| x.1).collect();
+
     files.set_grp_changes(sprite, frames, scale);
     Ok(())
 }
 
-struct FrameReader {
-    dir: PathBuf,
-    current_file: Option<(RgbaImage, PathBuf)>,
+struct FrameReader<'a> {
+    dir: &'a Path,
+    image_data_cache: &'a Mutex<ImageDataCache>,
+    tls_cache: &'a mut TlsImageDataCache,
+}
+
+// ImageDataCache is the "root" object, but it won't keep anything alive by itself.
+// Instead load_png returns TlsImageDataCache which keeps the all loaded pngs,
+// including but not limited to what the thread actually asked, alive.
+//
+// This won't work well if each frame read is done in a new thread (thread_local crate
+// won't free the TLS data on thread end, ending up everything getting buffered),
+// but rayon's worker threads should behave well.
+
+#[derive(Default)]
+struct ImageDataCache {
+    loaded: Vec<Weak<(RgbaImage, PathBuf)>>,
+}
+
+#[derive(Default)]
+struct TlsImageDataCache {
+    loaded: Vec<Arc<(RgbaImage, PathBuf)>>,
+}
+
+impl TlsImageDataCache {
+    fn get(&self, path: &Path) -> Option<&RgbaImage> {
+        self.loaded.iter().find(|x| x.1 == path).map(|x| &x.0)
+    }
+}
+
+impl ImageDataCache {
+    fn load_png(&mut self, filename: &Path) -> Result<TlsImageDataCache, Error> {
+        let mut strong_loaded =
+            self.loaded.iter().filter_map(|x| x.upgrade()).collect::<Vec<_>>();
+        // Free any memory that was droped in all TLS caches but had weak pointers here
+        self.loaded.retain(|x| x.strong_count() != 0);
+        if !strong_loaded.iter().any(|x| x.1 == filename) {
+            let file = File::open(&filename)
+                .with_context(|| format!("Unable to open {}", filename.to_string_lossy()))?;
+            let image = load_png(BufReader::new(file))
+                .with_context(|| format!("Unable to load PNG {}", filename.to_string_lossy()))?;
+            let arc = Arc::new((image, filename.into()));
+            self.loaded.push(Arc::downgrade(&arc));
+            strong_loaded.push(arc);
+        }
+        Ok(TlsImageDataCache {
+            loaded: strong_loaded,
+        })
+    }
 }
 
 fn load_png<R: Read>(reader: BufReader<R>) -> Result<RgbaImage, Error> {
@@ -108,11 +172,16 @@ fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>
     }
 }
 
-impl FrameReader {
-    fn new(dir: PathBuf) -> FrameReader {
+impl<'a> FrameReader<'a> {
+    fn new(
+        dir: &'a Path,
+        image_data_cache: &'a Mutex<ImageDataCache>,
+        tls_cache: &'a mut TlsImageDataCache,
+    ) -> FrameReader<'a> {
         FrameReader {
             dir,
-            current_file: None,
+            image_data_cache,
+            tls_cache,
         }
     }
 
@@ -135,18 +204,21 @@ impl FrameReader {
         } else {
             self.dir.join(format!("{}_{:03}.png", layer_prefix, frame))
         };
-        let cached_file_ok = match self.current_file {
-            Some((_, ref mut path)) => *path == filename,
-            None => false,
+        let image = match self.tls_cache.get(&filename) {
+            Some(s) => s,
+            None => {
+                // Lock the main cache before loading PNG.
+                // Reduces parallelism but prevents issues cases
+                // where 8 threads load a same 300MB PNG at once
+                // and 7 of them end up being discarded.
+                let mut main_cache = self.image_data_cache.lock().unwrap();
+                *self.tls_cache = main_cache.load_png(&filename)?;
+                self.tls_cache.get(&filename)
+                    .ok_or_else(|| {
+                        anyhow!("{} didn't load properly to cache???", filename.display())
+                    })?
+            }
         };
-        if !cached_file_ok {
-            let file = File::open(&filename)
-                .with_context(|| format!("Unable to open {}", filename.to_string_lossy()))?;
-            let image = load_png(BufReader::new(file))
-                .with_context(|| format!("Unable to load PNG {}", filename.to_string_lossy()))?;
-            self.current_file = Some((image, filename));
-        }
-        let image = self.current_file.as_mut().map(|x| &mut x.0).unwrap();
         let frame_view = if let Some(multi_frame) = multi_frame_image {
             let index = frame - multi_frame.first_frame;
             let frames_per_row = image.width() / multi_frame.frame_width;
@@ -185,7 +257,7 @@ impl FrameReader {
     }
 }
 
-pub fn import_frames<F: Fn(f32)>(
+pub fn import_frames<F: Fn(f32) + Sync>(
     files: &mut files::Files,
     frame_info: &FrameInfo,
     hd2_frame_info: Option<&FrameInfo>,
@@ -199,7 +271,7 @@ pub fn import_frames<F: Fn(f32)>(
     grp_path: Option<&Path>,
     report_progress: F,
 ) -> Result<(), Error> {
-    fn add_layers<F: Fn(f32)>(
+    fn add_layers<F: Fn(f32) + Sync>(
         layout: &mut anim_encoder::Layout,
         frame_info: &FrameInfo,
         dir: &Path,
@@ -208,16 +280,32 @@ pub fn import_frames<F: Fn(f32)>(
         scale: u32,
         report_progress: F,
     ) -> Result<(u32, u32), Error> {
-        let mut frame_reader = FrameReader::new(dir.into());
-        let mut step = 1.0;
+        let step = AtomicUsize::new(1);
         let step_count = frame_info.layers.len() as f32 * frame_info.frame_count as f32;
         let mut image_width = 0;
         let mut image_height = 0;
+        // Try to minimize amount of memory used by keeping PNGs loaded,
+        // so never parallelize layers (as they are expected to always be
+        // separate files)
         for &(i, _) in &frame_info.layers {
+            let image_data_cache = Mutex::new(ImageDataCache::default());
+            let tls = thread_local::ThreadLocal::new();
             let layer = first_layer + i as usize;
-            for f in 0..frame_info.frame_count {
-                let (data, width, height) =
-                    frame_reader.read_frame(frame_info, i, f, frame_scale)?;
+            let frames = (0..frame_info.frame_count).into_par_iter()
+                .map(|f| {
+                    let tls_cache = tls.get_or(|| RefCell::new(TlsImageDataCache::default()));
+                    let mut tls_cache = tls_cache.borrow_mut();
+                    let mut frame_reader =
+                        FrameReader::new(dir, &image_data_cache, &mut tls_cache);
+
+                    let (data, width, height) =
+                        frame_reader.read_frame(frame_info, i, f, frame_scale)?;
+                    let step = step.fetch_add(1, Ordering::Relaxed);
+                    report_progress((step as f32) / step_count);
+                    Ok((f, data, width, height))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            for (f, data, width, height) in frames {
                 image_width = image_width.max(width);
                 image_height = image_height.max(height);
                 let mut bounded = rgba_bounding_box(&data, width, height);
@@ -230,8 +318,6 @@ pub fn import_frames<F: Fn(f32)>(
                 bounded.coords.width *= scale;
                 bounded.coords.height *= scale;
                 layout.add_frame(layer, f as usize, bounded.data, bounded.coords);
-                report_progress(step / step_count);
-                step += 1.0;
             }
         }
         Ok((image_width, image_height))
