@@ -246,7 +246,7 @@ impl<'a> FrameReader<'a> {
                 &frame_view,
                 new_width,
                 new_height,
-                image::FilterType::Lanczos3,
+                image::imageops::FilterType::Lanczos3,
             )
         } else {
             frame_view

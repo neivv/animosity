@@ -31,11 +31,11 @@ implement_vertex!(LineVertex, pos, color, ty);
 
 impl Context {
     pub fn new(width: u32, height: u32) -> Context {
-        let events_loop = glutin::EventsLoop::new();
+        let events_loop = glutin::event_loop::EventLoop::new();
         let stride = width.next_power_of_two();
         let size = glutin::dpi::PhysicalSize {
-            width: stride as f64,
-            height: height as f64,
+            width: stride,
+            height: height,
         };
         let context = glutin::ContextBuilder::new()
             .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 0)))
