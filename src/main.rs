@@ -1756,7 +1756,7 @@ fn enable_file_actions(app: &gtk::Application) {
 fn open(filename: &Path) {
     let ui = ui();
     match files::Files::init(filename) {
-        Ok(f) => {
+        Ok((f, index)) => {
             ui.files_changed(&f);
             {
                 STATE.with(|x| {
@@ -1767,7 +1767,9 @@ fn open(filename: &Path) {
             }
             ui.info.draw_clear_all();
             ui.info.sprite_actions.activate_action("select_sd", None);
-            ui.info.select_sprite(0);
+            let index = index.unwrap_or(0);
+            ui.info.select_sprite(index);
+            ui.list.list.select(index);
             enable_file_actions(&ui.app);
         }
         Err(e) => {

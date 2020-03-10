@@ -304,8 +304,10 @@ impl Files {
 
     /// Tries to load an entire anim tree structure, if files seem to be laid out like that.
     /// Otherwise just opens the file given.
-    pub fn init(one_filename: &Path) -> Result<Files, Error> {
-        if let Some(root) = file_root_from_file(one_filename) {
+    ///
+    /// Returns sprite index if the filename is in anim/ or hd2/anim
+    pub fn init(one_filename: &Path) -> Result<(Files, Option<usize>), Error> {
+        if let Some((root, index)) = file_root_from_file(one_filename) {
             let mainsd_path = root.join("SD/mainSD.anim");
             let mainsd_anim = {
                 if mainsd_path.exists() && mainsd_path.is_file() {
@@ -321,7 +323,7 @@ impl Files {
                 .unwrap_or_else(|_| DEFAULT_IMAGES_DAT.into());
             let images_tbl = std::fs::read(root.join("arr/images.tbl"))
                 .unwrap_or_else(|_| DEFAULT_IMAGES_TBL.into());
-            Ok(Files {
+            Ok((Files {
                 sprites: (0..sprite_count as u32).map(|i| {
                     let hd_filename = |i: u32, prefix: &str| {
                         let mut dir: PathBuf = root.into();
@@ -342,12 +344,12 @@ impl Files {
                 edits: HashMap::new(),
                 images_dat,
                 images_tbl,
-            })
+            }, index))
         } else {
             match one_filename.extension().map(|x| x == "anim").unwrap_or(false) {
                 true => {
                     let mainsd = load_mainsd(one_filename)?;
-                    Ok(Files {
+                    Ok((Files {
                         sprites: (0..mainsd.sprites().len()).map(|i| {
                             SpriteFiles::MainSdOnly {
                                 image_id: i as u32,
@@ -360,10 +362,10 @@ impl Files {
                         edits: HashMap::new(),
                         images_dat: Vec::new(),
                         images_tbl: Vec::new(),
-                    })
+                    }, None))
                 }
                 false => {
-                    Ok(Files {
+                    Ok((Files {
                         sprites: vec![SpriteFiles::DdsGrp(one_filename.into())],
                         mainsd_anim: None,
                         root_path: Some(one_filename.into()),
@@ -371,7 +373,7 @@ impl Files {
                         edits: HashMap::new(),
                         images_dat: Vec::new(),
                         images_tbl: Vec::new(),
-                    })
+                    }, None))
                 }
             }
         }
@@ -919,28 +921,34 @@ fn file_location_hd<'a>(
     Ok(Some(FileLocation::Separate(&open_files.anim.last_mut().unwrap().0)))
 }
 
-fn file_root_from_file(file: &Path) -> Option<&Path> {
+fn file_root_from_file(file: &Path) -> Option<(&Path, Option<usize>)> {
     let filename = file.file_name()
         .and_then(|f| f.to_str())?;
     let parent_path = file.parent()?;
     let parent = parent_path.file_name()?.to_str()?;
     if filename.eq_ignore_ascii_case("mainsd.anim") {
         if parent.eq_ignore_ascii_case("sd") {
-            parent_path.parent()
+            parent_path.parent().map(|x| (x, None))
         } else {
             None
         }
     } else if filename.ends_with(".anim") && filename.starts_with("main_") {
-        // Nice that the valid images go from 000 to 999
-        let is_standard_name = filename.len() == 13 &&
-            filename.get(5..8).map(|x| x.chars().all(|x| x.is_numeric())).unwrap_or(false);
-        if is_standard_name && parent.eq_ignore_ascii_case("anim") {
+        let digit_len = filename.get(5..)
+            .map(|x| x.chars().take_while(|c| c.is_numeric()).count())
+            .filter(|&digit_len| digit_len >= 3)?;
+        let digit_str = &filename[5..][..digit_len];
+        let digit = digit_str.parse::<u32>().ok()? as usize;
+        if filename.len() - digit_len != "main_.anim".len() {
+            // main_.anim is 10 chars, anything else should be part of the anim number.
+            return None;
+        }
+        if parent.eq_ignore_ascii_case("anim") {
             let l2 = parent_path.parent()?;
             if l2.file_name()?.to_str()?.eq_ignore_ascii_case("hd2") {
                 l2.parent()
             } else {
                 Some(l2)
-            }
+            }.map(|x| (x, Some(digit)))
         } else {
             None
         }
@@ -956,11 +964,25 @@ fn image_name(image_id: u32) -> String {
 #[test]
 fn test_file_root_from_file() {
     let root = Path::new("a/b/c");
-    assert_eq!(file_root_from_file(Path::new("a/b/c/sd/mainsd.anim")), Some(root));
-    assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_000.anim")), Some(root));
-    assert_eq!(file_root_from_file(Path::new("a/b/c/hd2/anim/main_000.anim")), Some(root));
+    assert_eq!(file_root_from_file(Path::new("a/b/c/sd/mainsd.anim")), Some((root, None)));
+    assert_eq!(
+        file_root_from_file(Path::new("a/b/c/anim/main_000.anim")),
+        Some((root, Some(0))),
+    );
+    assert_eq!(
+        file_root_from_file(Path::new("a/b/c/hd2/anim/main_000.anim")),
+        Some((root, Some(0))),
+    );
+    assert_eq!(
+        file_root_from_file(Path::new("a/b/c/hd2/anim/main_003.anim")),
+        Some((root, Some(3))),
+    );
     assert_eq!(file_root_from_file(Path::new("a/b/c/mainsd.anim")), None);
     assert_eq!(file_root_from_file(Path::new("a/b/c/a/main_000.anim")), None);
     assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_nonstandard_name_000.anim")), None);
-    assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_1000.anim")), None);
+    assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_000_nonstandard_name.anim")), None);
+    assert_eq!(
+        file_root_from_file(Path::new("a/b/c/anim/main_1000.anim")),
+        Some((root, Some(1000))),
+    );
 }
