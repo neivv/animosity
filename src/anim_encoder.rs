@@ -222,7 +222,17 @@ impl Layout {
 
         let mut layout_order = final_map.into_iter().map(|(k, v)| (v, k)).collect::<Vec<_>>();
         // Place tallest frames first
-        layout_order.sort_by_key(|x| x.1.height);
+        layout_order.sort_by(|a, b| {
+            match (a.1.height, a.1.width).cmp(&(b.1.height, b.1.width)) {
+                std::cmp::Ordering::Equal => {
+                    // Use lowest found frame to break the tie
+                    let a_frame = a.0.iter().map(|x| x.0).min().unwrap_or(0);
+                    let b_frame = b.0.iter().map(|x| x.0).min().unwrap_or(0);
+                    a_frame.cmp(&b_frame)
+                }
+                x => x,
+            }
+        });
 
         layout_frames(layout_order, 8, frame_count)
     }
