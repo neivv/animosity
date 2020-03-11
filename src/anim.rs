@@ -519,24 +519,7 @@ pub fn read_texture<R: Read + Seek>(
         let data = dds.get_data(0)
             .map_err(|e| ErrKind::Dds("getting data", e.to_string()))?;
 
-        let width = ((texture.width as u32 - 1) | 3) + 1;
-        let height = ((texture.height as u32 - 1) | 3) + 1;
-        let mut data = match format {
-            D3DFormat::DXT1 => decode_dxt1(&data, width, height)?,
-            D3DFormat::DXT5 => decode_dxt5(&data, width, height)?,
-            _ => return Err(ErrKind::UnsupportedDdsFormat(format).into()),
-        };
-        // The decoding functions only work with multiplies of 4,
-        // but if some textures aren't such, resize them here.
-        if texture.width & 0x3 != 0 {
-            let remove_bytes = 4 - (texture.width & 0x3) as usize;
-            for y in 1..(texture.height as usize) {
-                let start = y * texture.width as usize * 4;
-                let len = ((texture.width as usize) + remove_bytes * y) * 4;
-                data[start..start + len].rotate_left(remove_bytes * y * 4);
-            }
-        }
-        data.resize(texture.width as usize * texture.height as usize * 4, 0);
+        let data = decode_dxt(data, texture.width as u32, texture.height as u32, format)?;
         Ok(RgbaTexture {
             data,
             width: texture.width as u32,
@@ -561,6 +544,33 @@ pub fn read_texture<R: Read + Seek>(
     } else {
         return Err(ErrKind::UnknownTextureFormat(magic).into());
     }
+}
+
+fn decode_dxt(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    format: D3DFormat,
+) -> Result<Vec<u8>, Error> {
+    let aligned_width = ((width as u32 - 1) | 3) + 1;
+    let aligned_height = ((height as u32 - 1) | 3) + 1;
+    let mut data = match format {
+        D3DFormat::DXT1 => decode_dxt1(&data, aligned_width, aligned_height)?,
+        D3DFormat::DXT5 => decode_dxt5(&data, aligned_width, aligned_height)?,
+        _ => return Err(ErrKind::UnsupportedDdsFormat(format).into()),
+    };
+    // The decoding functions only work with multiplies of 4,
+    // but if some textures aren't such, resize them here.
+    if width & 0x3 != 0 {
+        let remove_bytes = 4 - (width & 0x3) as usize;
+        for y in 1..(height as usize) {
+            let start = y * width as usize * 4;
+            let len = ((width as usize) + remove_bytes * y) * 4;
+            data[start..start + len].rotate_left(remove_bytes * y * 4);
+        }
+    }
+    data.resize(width as usize * height as usize * 4, 0);
+    Ok(data)
 }
 
 /// Returns the bytes without alpha multiplied

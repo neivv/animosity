@@ -498,7 +498,7 @@ fn encode_dxt5(
         let mut in_y = 0;
         let block_size_bytes = 16;
         let in_stride_bytes = (width_aligned / 4) * block_size_bytes;
-        while in_y < frame_height / 4 {
+        while in_y < height_aligned / 4 {
             let out_pos = ((y * (width / 4) + x_block) * block_size_bytes) as usize;
             let in_pos = (in_y * in_stride_bytes) as usize;
             (&mut out[out_pos..][..in_stride_bytes as usize])
@@ -564,7 +564,7 @@ fn encode_dxt1(
         let mut in_y = 0;
         let block_size_bytes = 8;
         let in_stride_bytes = (width_aligned / 4) * block_size_bytes;
-        while in_y < frame_height / 4 {
+        while in_y < height_aligned / 4 {
             let out_pos = ((y * (width / 4) + x_block) * block_size_bytes) as usize;
             let in_pos = (in_y * in_stride_bytes) as usize;
             (&mut out[out_pos..][..in_stride_bytes as usize])
@@ -604,5 +604,50 @@ pub fn encode(rgba: &[u8], width: u32, height: u32, format: anim::TextureFormat)
         anim::TextureFormat::Dxt1 => encode_dxt1(&frames, 0, width, height, 1),
         anim::TextureFormat::Dxt5 => encode_dxt5(&frames, 0, width, height, 1),
         anim::TextureFormat::Monochrome => encode_monochrome(&frames, 0, width, height, 1),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn check_roundtrip(
+        color: &[u8; 4],
+        width: u32,
+        height: u32,
+        format: anim::TextureFormat,
+    ) {
+        let mut bytes = Vec::new();
+        bytes.extend((0..(width * height)).flat_map(|_| color.iter().copied()));
+        let encoded = encode(&bytes, width, height, format);
+
+        println!("Checking {} x {}", width, height);
+        let cursor = std::io::Cursor::new(&encoded);
+        let decoded = anim::read_texture(cursor, &anim::Texture {
+            width: width as u16,
+            height: height as u16,
+            offset: 0,
+            size: encoded.len() as u32,
+        }).unwrap();
+        let decoded = decoded.data;
+        assert!(bytes == decoded);
+    }
+
+    #[test]
+    fn dxt1_roundtrip() {
+        for i in 0..4 {
+            for j in 0..4 {
+                check_roundtrip(&[0xff, 0x00, 0xff, 0xff], 40 + i, 20 + j, anim::TextureFormat::Dxt1);
+            }
+        }
+    }
+
+    #[test]
+    fn dxt5_roundtrip() {
+        for i in 0..4 {
+            for j in 0..4 {
+                check_roundtrip(&[0xff, 0x80, 0x00, 0x80], 40 + i, 20 + j, anim::TextureFormat::Dxt5);
+            }
+        }
     }
 }
