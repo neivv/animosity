@@ -793,17 +793,22 @@ impl Files {
                 }
             }
             self.open_files.clear();
-            // Closing mainsd
-            let sd_path = self.mainsd_anim.take().map(|x| x.0);
+            let mut sd_path = None;
+            if !sd_edits.is_empty() {
+                // Closing mainsd
+                sd_path = self.mainsd_anim.take().map(|x| x.0);
+            }
             for (temp, dest) in temp_files {
                 result = fs::rename(temp, dest);
                 if result.is_err() {
                     break;
                 }
             }
-            if let Some(sd_path) = sd_path {
-                let mainsd = load_mainsd(&sd_path)?;
-                self.mainsd_anim = Some((sd_path, mainsd));
+            if !sd_edits.is_empty() {
+                if let Some(sd_path) = sd_path {
+                    let mainsd = load_mainsd(&sd_path)?;
+                    self.mainsd_anim = Some((sd_path, mainsd));
+                }
             }
         }
         if result.is_ok() {
