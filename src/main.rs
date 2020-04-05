@@ -5,6 +5,7 @@
 #[macro_use] extern crate log;
 
 mod anim;
+mod anim_lit;
 mod anim_encoder;
 mod combo_box_enum;
 mod ddsgrp;
@@ -15,15 +16,17 @@ mod frame_info;
 mod gl;
 mod int_entry;
 mod files;
+mod recurse_checked_mutex;
 mod select_dir;
 mod shaders;
+mod widget_lighting;
 #[allow(dead_code)] mod ui_helpers;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::rc::Rc;
 
@@ -41,6 +44,7 @@ use glium::vertex::VertexBuffer;
 
 use crate::files::SpriteFiles;
 use crate::int_entry::{IntEntry, IntSize};
+use crate::recurse_checked_mutex::Mutex;
 
 fn init_log() -> Result<(), fern::InitError> {
     if cfg!(debug_assertions) {
@@ -89,7 +93,7 @@ fn init_panic_handler() {
         dialog.add_button("Ok", gtk::ResponseType::Ok);
         dialog.set_title("Crash");
         dialog.run();
-        dialog.destroy();
+        dialog.close();
         std::process::exit(3);
     }));
 }
@@ -106,6 +110,7 @@ fn main() {
         let ui = create_ui(app);
         create_actions(app, &ui.main_window.clone().upcast());
         ui.main_window.show_all();
+        ui.info.lighting_expander.emit_activate();
         UI.with(|x| {
             *x.borrow_mut() = Some(Rc::new(ui));
         });
@@ -605,6 +610,8 @@ pub struct SpriteInfo {
     selected_type: Cell<SpriteType>,
     draw_area: gtk::DrawingArea,
     draw_clear_requests: RefCell<Vec<TextureId>>,
+    lighting: Arc<widget_lighting::SpriteLighting>,
+    lighting_expander: gtk::Expander,
 }
 
 fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::SimpleAction> {
@@ -612,8 +619,9 @@ fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::S
 }
 
 impl SpriteInfo {
-    fn new(file_shared: Arc<Mutex<files::Files>>) -> Arc<SpriteInfo> {
+    fn new(file_shared: &Arc<Mutex<files::Files>>) -> Arc<SpriteInfo> {
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let bx1 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let sprite_actions = gio::SimpleActionGroup::new();
         bx.insert_action_group("sprite", Some(&sprite_actions));
         let sprite_bx = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -632,12 +640,51 @@ impl SpriteInfo {
         files.set_buffer(Some(&file_list));
         files.set_editable(false);
         files.set_wrap_mode(gtk::WrapMode::None);
+        let lighting = widget_lighting::SpriteLighting::new(file_shared, sprite_actions.clone());
+        let expander = gtk::Expander::new(None);
+        // There is expander.set_resize_toplevel, but it assumes the expander is being used
+        // vertically ;_;
+        let light2 = lighting.clone();
+        let expander_toggled = Rc::new(move |expander: &gtk::Expander, grow| {
+            use gdk::WindowExt;
+            let (_, size) = light2.widget().get_preferred_size();
+            let (_, expander_width) = expander.get_preferred_width();
+            if let Some(window) = expander.get_window() {
+                let width = window.get_width();
+                let height = window.get_height();
+                let new_w = if grow {
+                    width + (size.width - expander_width).max(0)
+                } else {
+                    width - (size.width - expander_width).max(0)
+                };
+                window.resize(new_w, height);
+            }
+        });
+        let expander_toggled2 = expander_toggled.clone();
+        expander.connect_activate(move |expander| {
+            // This is ran before the state changes from activation
+            if expander.get_expanded() {
+                return;
+            }
+            expander_toggled2(expander, true);
+        });
+        expander.connect_property_expanded_notify(move |expander| {
+            // This is ran after state change
+            if expander.get_expanded() {
+                return;
+            }
+            expander_toggled(expander, false);
+        });
+        expander.add(&lighting.widget());
+
         bx.pack_start(&sprite_bx, true, true, 0);
         bx.pack_start(&files, false, false, 0);
+        bx1.pack_start(&bx, true, true, 0);
+        bx1.pack_start(&expander, false, false, 0);
         let result = Arc::new(SpriteInfo {
-            bx,
+            bx: bx1,
             file_list,
-            files: file_shared,
+            files: file_shared.clone(),
             sprite_actions,
             sprite_index: AtomicUsize::new(0),
             selected_layer: AtomicUsize::new(0),
@@ -645,6 +692,8 @@ impl SpriteInfo {
             selected_type: Cell::new(SpriteType::Sd),
             draw_area: draw_area.clone(),
             draw_clear_requests: RefCell::new(Vec::new()),
+            lighting,
+            lighting_expander: expander,
         });
         SpriteInfo::create_sprite_actions(&result, &result.sprite_actions.clone().upcast());
         values.connect_actions(&result.sprite_actions);
@@ -846,7 +895,7 @@ impl SpriteInfo {
         let cancel_button = gtk::Button::new_with_label("Cancel");
         let w = window.clone();
         cancel_button.connect_clicked(move |_| {
-            w.destroy();
+            w.close();
         });
         let s = this.clone();
         let w = window.clone();
@@ -896,7 +945,7 @@ impl SpriteInfo {
                     file.frames().map(|x| x.len()).unwrap_or(0);
                 let single_image = single_image_check2.get_active();
                 std::thread::spawn(move || {
-                    let mut files = files_arc.lock().unwrap();
+                    let mut files = files_arc.lock();
                     let file = match files.file(tex_id.0, tex_id.1) {
                         Ok(Some(o)) => o,
                         _ => return,
@@ -921,7 +970,7 @@ impl SpriteInfo {
                 frame_count = file.layer_count();
                 let single_image = single_image_check2.get_active();
                 std::thread::spawn(move || {
-                    let mut files = files_arc.lock().unwrap();
+                    let mut files = files_arc.lock();
                     let file = match files.file(tex_id.0, tex_id.1) {
                         Ok(Some(o)) => o,
                         _ => return,
@@ -959,7 +1008,7 @@ impl SpriteInfo {
                                 frame_count, path.to_string_lossy(),
                             );
                             info_msg_box(&window, &msg);
-                            window.destroy();
+                            window.close();
                         }
                         Err(e) => {
                             let msg = format!("Unable to export frames: {:?}", e);
@@ -1516,11 +1565,9 @@ impl SpriteInfo {
                 self.file_list.set_text(&buf);
             }
         }
+        self.lighting.select_sprite(index);
         let tex_id = self.tex_id();
-        let mut files = match self.files.try_lock() {
-            Ok(o) => o,
-            _ => return,
-        };
+        let mut files = self.files.lock();
         let mut file = files.file(tex_id.0, tex_id.1).unwrap_or_else(|e| {
             error!("Couldn't open {:?}: {}", tex_id, e);
             None
@@ -1595,7 +1642,7 @@ fn save() -> Result<(), Error> {
         state.files.clone()
     });
     let result = {
-        let mut files = files.lock().unwrap();
+        let mut files = files.lock();
         files.save()
     };
     if let Err(ref e) = result {
@@ -1617,7 +1664,7 @@ fn check_unsaved_files() -> bool {
             let state = x.borrow();
             state.files.clone()
         });
-        let files = files.lock().unwrap();
+        let files = files.lock();
         files.has_changes()
     };
     if has_changes {
@@ -1634,7 +1681,7 @@ fn check_unsaved_files() -> bool {
         dialog.add_button("Discard changes", gtk::ResponseType::Other(2));
         dialog.add_button("Cancel", gtk::ResponseType::Cancel);
         let result = dialog.run();
-        dialog.destroy();
+        dialog.close();
         match result {
             gtk::ResponseType::Other(1) => {
                 let result = save();
@@ -1720,7 +1767,7 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
                 let state = x.borrow();
                 state.files.clone()
             });
-            let mut files = files.lock().unwrap();
+            let mut files = files.lock();
             let mut out = std::io::BufWriter::new(File::create("frames.txt").unwrap());
             for i in 0..files.sprites().len() {
                 if let Some(file) = files.file(i, SpriteType::Sd).unwrap() {
@@ -1761,7 +1808,7 @@ fn open(filename: &Path) {
             {
                 STATE.with(|x| {
                     let state = x.borrow();
-                    let mut files = state.files.lock().unwrap();
+                    let mut files = state.files.lock();
                     *files = f;
                 });
             }
@@ -1855,7 +1902,7 @@ fn create_ui(app: &gtk::Application) -> Ui {
     let files = {
         STATE.with(|x| x.borrow().files.clone())
     };
-    let info = SpriteInfo::new(files);
+    let info = SpriteInfo::new(&files);
     let list = SpriteList::new(info.clone());
     box1.pack_start(&list.widget(), false, false, 0);
     box1.pack_start(&info.widget(), true, true, 0);
@@ -1865,12 +1912,13 @@ fn create_ui(app: &gtk::Application) -> Ui {
     info.on_dirty_update(move |dirty| {
         STATE.with(|x| {
             let state = x.borrow();
-            let files = state.files.lock().unwrap();
+            let files = state.files.lock();
             w.set_title(&title(files.root_path(), dirty));
         });
     });
     window.set_title(&title(None, false));
     window.resize(800, 600);
+
     let style_ctx = window.get_style_context();
     let css = crate::get_css_provider();
     style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
@@ -1902,7 +1950,7 @@ fn info_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
     );
     dialog.add_button("Ok", gtk::ResponseType::Ok);
     dialog.run();
-    dialog.destroy();
+    dialog.close();
 }
 
 fn error_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
@@ -1915,7 +1963,7 @@ fn error_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
     );
     dialog.add_button("Ok", gtk::ResponseType::Ok);
     dialog.run();
-    dialog.destroy();
+    dialog.close();
 }
 
 #[derive(Clone)]

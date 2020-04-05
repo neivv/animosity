@@ -258,7 +258,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let cancel_button = gtk::Button::new_with_label("Cancel");
     let w = window.clone();
     cancel_button.connect_clicked(move |_| {
-        w.destroy();
+        w.close();
     });
     let sprite_info = sprite_info.clone();
     let w = window.clone();
@@ -404,7 +404,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 None
             };
             std::thread::spawn(move || {
-                let mut files = files_arc.lock().unwrap();
+                let mut files = files_arc.lock();
                 let result = frame_import::import_frames(
                     &mut files,
                     &frame_info,
@@ -442,7 +442,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 }
             };
             std::thread::spawn(move || {
-                let mut files = files_arc.lock().unwrap();
+                let mut files = files_arc.lock();
                 let result = frame_import::import_frames_grp(
                     &mut files,
                     &frame_info,
@@ -474,7 +474,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 }
                 match result {
                     Ok(frame_count) => {
-                        let mut files = files_arc.lock().unwrap();
+                        let mut files = files_arc.lock();
                         sprite_info.draw_clear_all();
                         if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
                             sprite_info.changed_ty(tex_id, &mut file);
@@ -485,7 +485,8 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                         }
 
                         info_msg_box(&window, format!("Imported {} frames", frame_count));
-                        window.destroy();
+                        sprite_info.lighting.select_sprite(tex_id.0);
+                        window.close();
                     }
                     Err(e) => {
                         let msg = format!("Unable to import frames: {:?}", e);

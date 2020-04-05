@@ -389,6 +389,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
     };
 
     let mut changes = layout_result.encode(0, &formats, 1);
+    let frame_count = changes.frames.len() as u32;
     for f in &mut changes.frames {
         f.tex_x *= scale_mul;
         f.tex_y *= scale_mul;
@@ -420,6 +421,15 @@ pub fn import_frames<F: Fn(f32) + Sync>(
             }
         }
         files.set_tex_changes(sprite, SpriteType::Hd2, changes);
+    }
+
+    // Resize lit frames if lit exists
+    if ty == SpriteType::Hd {
+        if let Some(lit) = files.lit() {
+            if let Some(sprite) = lit.sprite_mut(sprite) {
+                sprite.set_frame_count(frame_count);
+            }
+        }
     }
 
     Ok(())

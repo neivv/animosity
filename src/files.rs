@@ -1,13 +1,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
-use std::io::Cursor;
+use std::io::{BufReader, BufWriter, Cursor, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use byteorder::{ReadBytesExt, LE};
 
 use crate::anim::{self, SpriteValues};
+use crate::anim_lit::{self, Lit};
 use crate::ddsgrp;
 use crate::{Error, SpriteType};
 
@@ -19,6 +20,76 @@ pub struct Files {
     edits: HashMap<(usize, SpriteType), Edit>,
     images_dat: Vec<u8>,
     images_tbl: Vec<u8>,
+    lit: Option<LitFile>,
+}
+
+pub struct LitFile {
+    /// This tracks which sprites have lighting enabled.
+    /// On load only enabled sprites are ones where Lit.sprites is Some,
+    /// but those sprites won't ever be changed to None so that
+    /// toggling enable off/on restores the old values until program exit.
+    enabled: Vec<bool>,
+    editable: Lit,
+    original: Lit,
+    path: PathBuf,
+}
+
+impl LitFile {
+    fn has_changes(&self) -> bool {
+        let editable = self.editable.sprites();
+        let original = self.original.sprites();
+        self.enabled.iter().enumerate()
+            .any(|(i, &enabled)| {
+                if enabled {
+                    editable[i] != original[i]
+                } else {
+                    original[i].has_data()
+                }
+            })
+    }
+
+    /// Writes the edited lit to `out` and updates `self.original` so that
+    /// `has_changes()` will return false.
+    ///
+    /// On error `self` stays unchanged.
+    fn write_and_set_original<W: Write + Seek>(&mut self, out: &mut W) -> Result<(), Error> {
+        let mut new_original = self.editable.clone();
+        for (i, enabled) in self.enabled.iter().cloned().enumerate() {
+            if !enabled {
+                new_original.remove_sprite(i);
+            }
+        }
+        new_original.write(out)?;
+        self.original = new_original;
+        Ok(())
+    }
+
+    pub fn enable_sprite(&mut self, index: usize, frame_count: u32) -> &mut anim_lit::Sprite {
+        self.enabled[index] = true;
+        let sprite = self.editable.sprite_mut(index).unwrap();
+        sprite.set_frame_count(frame_count);
+        sprite
+    }
+
+    pub fn disable_sprite(&mut self, index: usize) {
+        self.enabled[index] = false;
+    }
+
+    pub fn sprite(&self, index: usize) -> Option<&anim_lit::Sprite> {
+        if self.enabled[index] {
+            self.editable.sprite(index)
+        } else {
+            None
+        }
+    }
+
+    pub fn sprite_mut(&mut self, index: usize) -> Option<&mut anim_lit::Sprite> {
+        if self.enabled[index] {
+            self.editable.sprite_mut(index)
+        } else {
+            None
+        }
+    }
 }
 
 static DEFAULT_IMAGES_TBL: &[u8] = include_bytes!("../arr/images.tbl");
@@ -295,6 +366,7 @@ impl Files {
             edits: HashMap::new(),
             images_dat: Vec::new(),
             images_tbl: Vec::new(),
+            lit: None,
         }
     }
 
@@ -323,6 +395,22 @@ impl Files {
                 .unwrap_or_else(|_| DEFAULT_IMAGES_DAT.into());
             let images_tbl = std::fs::read(root.join("arr/images.tbl"))
                 .unwrap_or_else(|_| DEFAULT_IMAGES_TBL.into());
+            let lit_path = root.join("anim/main.lit");
+            let lit = if lit_path.exists() && lit_path.is_file() {
+                let file = fs::File::open(&lit_path)
+                    .with_context(|| format!("Opening {} failed", lit_path.display()))?;
+                let mut read = BufReader::new(file);
+                let lit = Lit::read(&mut read)
+                    .with_context(|| format!("Reading {} failed", lit_path.display()))?;
+                Some(LitFile {
+                    enabled: lit.sprites().iter().map(|x| x.has_data()).collect(),
+                    editable: lit.clone(),
+                    original: lit,
+                    path: lit_path,
+                })
+            } else {
+                None
+            };
             Ok((Files {
                 sprites: (0..sprite_count as u32).map(|i| {
                     let hd_filename = |i: u32, prefix: &str| {
@@ -344,6 +432,7 @@ impl Files {
                 edits: HashMap::new(),
                 images_dat,
                 images_tbl,
+                lit,
             }, index))
         } else {
             match one_filename.extension().map(|x| x == "anim").unwrap_or(false) {
@@ -362,6 +451,7 @@ impl Files {
                         edits: HashMap::new(),
                         images_dat: Vec::new(),
                         images_tbl: Vec::new(),
+                        lit: None,
                     }, None))
                 }
                 false => {
@@ -373,6 +463,7 @@ impl Files {
                         edits: HashMap::new(),
                         images_dat: Vec::new(),
                         images_tbl: Vec::new(),
+                        lit: None,
                     }, None))
                 }
             }
@@ -693,7 +784,7 @@ impl Files {
     }
 
     pub fn has_changes(&self) -> bool {
-        !self.edits.is_empty()
+        !self.edits.is_empty() || self.lit.as_ref().map(|x| x.has_changes()).unwrap_or(false)
     }
 
     pub fn save(&mut self) -> Result<(), Error> {
@@ -792,6 +883,17 @@ impl Files {
                     temp_files.push((out_path, sd_path.clone()));
                 }
             }
+            if let Some(ref mut lit) = self.lit() {
+                if lit.has_changes() {
+                    let out_path = temp_file_path(&lit.path);
+                    let out = fs::File::create(&out_path).with_context(|| {
+                        format!("Unable to create {}", out_path.to_string_lossy())
+                    })?;
+                    let mut out = BufWriter::new(out);
+                    lit.write_and_set_original(&mut out)?;
+                    temp_files.push((out_path, lit.path.clone()));
+                }
+            }
             self.open_files.clear();
             let mut sd_path = None;
             if !sd_edits.is_empty() {
@@ -829,6 +931,10 @@ impl Files {
         let string_data = self.images_tbl.get(tbl_offset..)?;
         let string_len = string_data.iter().position(|&x| x == 0)?;
         Some(format!("unit\\{}", String::from_utf8_lossy(&string_data[..string_len])))
+    }
+
+    pub fn lit(&mut self) -> Option<&mut LitFile> {
+        self.lit.as_mut()
     }
 }
 
