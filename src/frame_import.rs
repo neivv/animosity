@@ -309,6 +309,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
                 image_width = image_width.max(width);
                 image_height = image_height.max(height);
                 let mut bounded = rgba_bounding_box(&data, width, height);
+
                 let x_offset = (frame_info.offset_x as f32 * frame_scale) as i32;
                 let y_offset = (frame_info.offset_y as f32 * frame_scale) as i32;
                 bounded.coords.x_offset =
@@ -408,11 +409,6 @@ pub fn import_frames<F: Fn(f32) + Sync>(
     files.set_tex_changes(sprite, ty, changes);
     if let Some((hd2, _dir)) = hd2_frame_info {
         let mut changes = layout_result.encode(layer_count, &formats, 2);
-        for f in &mut changes.frames {
-            // The coordinates are already 2x otherwise
-            f.width = f.width;
-            f.height = f.height;
-        }
         for ty in &hd2.frame_types {
             for f in ty.first_frame..ty.last_frame + 1 {
                 if let Some(f) = changes.frames.get_mut(f as usize) {

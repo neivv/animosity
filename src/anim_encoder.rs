@@ -24,9 +24,13 @@ pub struct FrameCoords {
     pub height: u32,
 }
 
-/// Frames for a single layer
+/// Frame graphics for each layer
 #[derive(Clone, Eq, PartialEq, Hash)]
 struct LayerFrames {
+    /// The coords are an offset relative to topleft of the area
+    /// taken by all graphics of this frame.
+    /// (E.g at least one layer must have X = 0 and one must have Y = 0,
+    /// not necessarily the same layer though)
     frames: Vec<(Rc<Frame>, (i32, i32))>,
     width: u32,
     height: u32,
@@ -52,6 +56,12 @@ pub struct Layout {
 }
 
 pub struct LayoutResult {
+    /// Same graphics can be used for multiple frames (with potentially different offsets)
+    /// Contains unique graphics (in no specific order),
+    /// for each graphic there's
+    ///  - Vec<(frame_id, offset)>,
+    ///  - graphics for each layer
+    ///  - Texture coordinates (Anim format requires it to be same for each layer)
     frames: Vec<(Vec<(usize, FrameOffset)>, LayerFrames, TexCoords)>,
     texture_width: u32,
     texture_height: u32,
@@ -168,29 +178,34 @@ impl Layout {
         });
         for f in (0..frame_count).rev() {
             let self_frames = &self.frames;
-            let mut frames = self.frame_lookup.iter_mut().enumerate().map(|(i, vec)| {
-                if f < vec.len() {
-                    vec.swap_remove(f).map(|(frame_data, _x, _y)| (frame_data, i))
-                } else {
-                    None
-                }
-            }).map(|x| match x {
-                Some((x, layer)) => {
-                    let offsets = self_frames[layer].get(&x)
-                        .expect("Lookups weren't synced")
-                        .iter()
-                        .find(|x| x.0 == f)
-                        .map(|x| x.1)
-                        .expect("Lookups weren't synced");
-                    (x, offsets)
-                }
-                None => (dummy_frame.clone(), (0, 0)),
-            }).collect::<Vec<_>>();
+            // `(Frame, x_off, y_off)` for each layer
+            let mut frames: Vec<(Rc<Frame>, (i32, i32))> = self.frame_lookup.iter_mut()
+                .enumerate()
+                .map(|(layer, vec)| {
+                    if f < vec.len() {
+                        vec.swap_remove(f).map(|(frame_data, _x, _y)| (frame_data, layer))
+                    } else {
+                        None
+                    }
+                }).map(|x| match x {
+                    Some((x, layer)) => {
+                        let offsets = self_frames[layer].get(&x)
+                            .expect("Lookups weren't synced")
+                            .iter()
+                            .find(|x| x.0 == f)
+                            .map(|x| x.1)
+                            .expect("Lookups weren't synced");
+                        (x, offsets)
+                    }
+                    None => (dummy_frame.clone(), (0, 0)),
+                }).collect::<Vec<_>>();
 
             let base_x_offset = frames.iter().filter(|x| !x.0.data.is_empty())
                 .map(|x| (x.1).0).min().unwrap_or(0);
             let base_y_offset = frames.iter().filter(|x| !x.0.data.is_empty())
                 .map(|x| (x.1).1).min().unwrap_or(0);
+            // Remap x/y offsets so that topleftmost frames are at 0,0 and
+            // others relative to that.
             for f in &mut frames {
                 if f.0.data.is_empty() {
                     (f.1).0 = base_x_offset;
