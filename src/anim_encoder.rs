@@ -463,8 +463,9 @@ fn encode_monochrome(
         let mut out_pos = (
             (place.y + offset.1 as u32) / scale * width + (place.x + offset.0 as u32) / scale
         ) as usize + 4;
-        for c in frame.data.chunks(frame.width as usize * 4) {
-            let out = &mut out[out_pos..out_pos + frame.width as usize];
+        let frame_width = frame.width / scale;
+        for c in frame.data.chunks(frame_width as usize * 4) {
+            let out = &mut out[out_pos..out_pos + frame_width as usize];
             for (out, x) in out.iter_mut().zip(c.chunks(4)) {
                 *out = if x[3] < 128 { 0 } else { 255 };
             }
@@ -481,36 +482,52 @@ fn encode_dxt5(
     height: u32,
     scale: u32,
 ) -> Vec<u8> {
-    let width = ((width - 1) | 3) + 1;
-    let height = ((height - 1) | 3) + 1;
+    let width = align4(width);
+    let height = align4(height);
 
     let mut out = vec![0; (width * height) as usize];
     let mut tmp_buf = Vec::new();
+    let mut in_buf = Vec::new();
     for (_, f, place) in frames {
         let &(ref frame, ref offset) = &f.frames[layer];
         if frame.data.is_empty() {
             continue;
         }
 
-        let x_block = (place.x + offset.0 as u32) / scale / 4;
-        let y_block = (place.y + offset.1 as u32) / scale / 4;
+        let place_x = (place.x + offset.0 as u32) / scale;
+        let place_y = (place.y + offset.1 as u32) / scale;
+        let x_block = place_x / 4;
+        let y_block = place_y / 4;
         let frame_width = frame.width / scale;
         let frame_height = frame.height / scale;
-        let width_aligned = match frame_width & 3 == 0 {
-            true => frame_width,
-            false => (frame_width | 3) + 1,
-        };
-        let height_aligned = match frame_height & 3 == 0 {
-            true => frame_height,
-            false => (frame_height | 3) + 1,
-        };
+        let width_aligned = align4((place_x & 3) + frame_width);
+        let height_aligned = align4((place_y & 3) + frame_height);
 
         tmp_buf.clear();
         tmp_buf.resize((width_aligned * height_aligned) as usize, 0);
+        let (in_data, in_width, in_height) = if place_x & 3 == 0 && place_y & 3 == 0 {
+            // Can just use frame data.
+            // Could also require widt/hheight be multiple of 4 and otherwise fill
+            // with [0, 0, 0, 0], as squish defaults to [0, 0, 0, 255] for unspecified
+            // pixels
+            (&frame.data, frame_width, frame_height)
+        } else {
+            // Copy frame to a buffer that is 4-aligned as expected
+            in_buf.clear();
+            in_buf.resize(4 * (width_aligned * height_aligned) as usize, 0);
+            for (frame_y, in_buf_y) in ((place_y & 3)..).take(frame_height as usize).enumerate() {
+                let out_pos = (in_buf_y * height_aligned * 4 + (place_x & 3) * 4) as usize;
+                let in_pos = frame_y * frame_height as usize * 4;
+                let out_slice = &mut in_buf[out_pos..][..frame_width as usize * 4];
+                let in_slice = &frame.data[in_pos..][..frame_width as usize * 4];
+                out_slice.copy_from_slice(in_slice);
+            }
+            (&in_buf, width_aligned, height_aligned)
+        };
         squish::Format::Bc3.compress(
-            &frame.data,
-            frame_width as usize,
-            frame_height as usize,
+            in_data,
+            in_width as usize,
+            in_height as usize,
             squish::Params {
                 algorithm: squish::Algorithm::IterativeClusterFit,
                 weights: squish::COLOUR_WEIGHTS_PERCEPTUAL,
@@ -540,6 +557,10 @@ fn encode_dxt5(
     dds_out
 }
 
+fn align4(val: u32) -> u32 {
+    (val.wrapping_sub(1) | 3).wrapping_add(1)
+}
+
 fn encode_dxt1(
     frames: &[(Vec<(usize, FrameOffset)>, LayerFrames, TexCoords)],
     layer: usize,
@@ -547,10 +568,11 @@ fn encode_dxt1(
     height: u32,
     scale: u32,
 ) -> Vec<u8> {
-    let width = ((width - 1) | 3) + 1;
-    let height = ((height - 1) | 3) + 1;
+    let width = align4(width);
+    let height = align4(height);
 
     let mut out = vec![0; (width * height) as usize / 2];
+    let mut in_buf = Vec::new();
     let mut tmp_buf = Vec::new();
     for (_, f, place) in frames {
         let &(ref frame, ref offset) = &f.frames[layer];
@@ -558,25 +580,40 @@ fn encode_dxt1(
             continue;
         }
 
-        let x_block = (place.x + offset.0 as u32) / scale / 4;
-        let y_block = (place.y + offset.1 as u32) / scale / 4;
+        let place_x = (place.x + offset.0 as u32) / scale;
+        let place_y = (place.y + offset.1 as u32) / scale;
+        let x_block = place_x / 4;
+        let y_block = place_y / 4;
         let frame_width = frame.width / scale;
         let frame_height = frame.height / scale;
-        let width_aligned = match frame_width & 3 == 0 {
-            true => frame_width,
-            false => (frame_width | 3) + 1,
-        };
-        let height_aligned = match frame_height & 3 == 0 {
-            true => frame_height,
-            false => (frame_height | 3) + 1,
-        };
+        let width_aligned = align4((place_x & 3) + frame_width);
+        let height_aligned = align4((place_y & 3) + frame_height);
 
         tmp_buf.clear();
         tmp_buf.resize((width_aligned * height_aligned / 2) as usize, 0);
+        let (in_data, in_width, in_height) = if place_x & 3 == 0 && place_y & 3 == 0 {
+            // Can just use frame data.
+            // Could also require widt/hheight be multiple of 4 and otherwise fill
+            // with [0, 0, 0, 0], as squish defaults to [0, 0, 0, 255] for unspecified
+            // pixels
+            (&frame.data, frame_width, frame_height)
+        } else {
+            // Copy frame to a buffer that is 4-aligned as expected
+            in_buf.clear();
+            in_buf.resize(4 * (width_aligned * height_aligned) as usize, 0);
+            for (frame_y, in_buf_y) in ((place_y & 3)..).take(frame_height as usize).enumerate() {
+                let out_pos = (in_buf_y * height_aligned * 4 + (place_x & 3) * 4) as usize;
+                let in_pos = frame_y * frame_height as usize * 4;
+                let out_slice = &mut in_buf[out_pos..][..frame_width as usize * 4];
+                let in_slice = &frame.data[in_pos..][..frame_width as usize * 4];
+                out_slice.copy_from_slice(in_slice);
+            }
+            (&in_buf, width_aligned, height_aligned)
+        };
         squish::Format::Bc1.compress(
-            &frame.data,
-            frame_width as usize,
-            frame_height as usize,
+            in_data,
+            in_width as usize,
+            in_height as usize,
             squish::Params {
                 algorithm: squish::Algorithm::IterativeClusterFit,
                 weights: squish::COLOUR_WEIGHTS_PERCEPTUAL,
@@ -636,6 +673,8 @@ pub fn encode(rgba: &[u8], width: u32, height: u32, format: anim::TextureFormat)
 mod test {
     use super::*;
 
+    use std::io;
+
     fn check_roundtrip(
         color: &[u8; 4],
         width: u32,
@@ -674,5 +713,150 @@ mod test {
                 check_roundtrip(&[0xff, 0x80, 0x00, 0x80], 40 + i, 20 + j, anim::TextureFormat::Dxt5);
             }
         }
+    }
+
+    #[test]
+    fn hd_hd2_offsets() {
+        // Set HD2 offset to 4, 4
+        // but HD to 9, 9.
+        // Make sure that the HD2 offset being scaled to 8, 8
+        // won't change HD offset.
+        // (Maybe the encoding code should handle the HD-HD2 relation better)
+        let mut layout = Layout::new();
+        let coords = FrameCoords {
+            x_offset: 9,
+            y_offset: 9,
+            width: 8,
+            height: 8,
+        };
+        let data = (0usize..(8*8)).flat_map(|_| {
+            vec![255, 255, 255, 255]
+        }).collect();
+        layout.add_frame(0, 0, data, coords);
+        let coords = FrameCoords {
+            x_offset: 8,
+            y_offset: 8,
+            width: 8,
+            height: 8,
+        };
+        let data = (0usize..(4*4)).flat_map(|_| {
+            vec![255, 255, 255, 255]
+        }).collect();
+        layout.add_frame(1, 0, data, coords);
+        let result = layout.layout();
+
+        // --- Monochrome ---
+        let hd = result.encode(0, &[Some(anim::TextureFormat::Monochrome)], 1);
+        let hd2 = result.encode(1, &[Some(anim::TextureFormat::Monochrome)], 2);
+        assert_eq!(hd2.frames[0].x_off, 8);
+        assert_eq!(hd2.frames[0].y_off, 8);
+        assert_eq!(hd2.frames[0].width, 9);
+        assert_eq!(hd2.frames[0].height, 9);
+        let (tex, tex_data) = hd2.textures[0].as_ref().unwrap();
+        let mut eq_data = vec![66u8, 77, 80, 32]; // BMP\x20
+        eq_data.extend((0usize..(8*8)).map(|i| {
+            if i % 8 >= 4 || i / 8 >= 4 {
+                0u8
+            } else {
+                255
+            }
+        }));
+        assert_eq!(tex.width, 8);
+        assert_eq!(tex.height, 8);
+        assert_eq!(*tex_data, eq_data);
+
+        assert_eq!(hd.frames[0].x_off, 8);
+        assert_eq!(hd.frames[0].y_off, 8);
+        assert_eq!(hd.frames[0].width, 9);
+        assert_eq!(hd.frames[0].height, 9);
+        let (tex, tex_data) = hd.textures[0].as_ref().unwrap();
+        let mut eq_data = vec![66u8, 77, 80, 32]; // BMP\x20
+        eq_data.extend((0usize..(16*16)).map(|i| {
+            let col = i % 16;
+            let row = i / 16;
+            if row == 0 || row >= 9 || col == 0 || col >= 9 {
+                0u8
+            } else {
+                255
+            }
+        }));
+        assert_eq!(tex.width, 16);
+        assert_eq!(tex.height, 16);
+        assert_eq!(*tex_data, eq_data);
+
+        // --- DXT1 ---
+        let hd = result.encode(0, &[Some(anim::TextureFormat::Dxt1)], 1);
+        let hd2 = result.encode(1, &[Some(anim::TextureFormat::Dxt1)], 2);
+        let (tex, tex_data) = hd2.textures[0].as_ref().unwrap();
+        assert_eq!(tex.width, 8);
+        assert_eq!(tex.height, 8);
+        let decoded = crate::anim::read_texture(io::Cursor::new(&tex_data), tex).unwrap();
+        assert_eq!(decoded.width, 8);
+        assert_eq!(decoded.height, 8);
+        let eq_data = (0usize..(8*8)).flat_map(|i| {
+            if i % 8 >= 4 || i / 8 >= 4 {
+                // Changing code so that pixels outside tex area were [0, 0, 0, 0] would be ok
+                vec![0u8, 0, 0, 255]
+            } else {
+                vec![255u8, 255, 255, 255]
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(decoded.data, eq_data);
+
+        let (tex, tex_data) = hd.textures[0].as_ref().unwrap();
+        assert_eq!(tex.width, 16);
+        assert_eq!(tex.height, 16);
+        let decoded = crate::anim::read_texture(io::Cursor::new(&tex_data), tex).unwrap();
+        assert_eq!(decoded.width, 16);
+        assert_eq!(decoded.height, 16);
+        let eq_data = (0usize..(16*16)).flat_map(|i| {
+            let col = i % 16;
+            let row = i / 16;
+            if row == 0 || row >= 9 || col == 0 || col >= 9 {
+                if row >= 12 || col >= 12 {
+                    vec![0u8, 0, 0, 255]
+                } else {
+                    vec![0u8, 0, 0, 0]
+                }
+            } else {
+                vec![255u8, 255, 255, 255]
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(decoded.data, eq_data);
+
+        // --- DXT5 ---
+        let hd = result.encode(0, &[Some(anim::TextureFormat::Dxt5)], 1);
+        let hd2 = result.encode(1, &[Some(anim::TextureFormat::Dxt5)], 2);
+        let (tex, tex_data) = hd2.textures[0].as_ref().unwrap();
+        assert_eq!(tex.width, 8);
+        assert_eq!(tex.height, 8);
+        let decoded = crate::anim::read_texture(io::Cursor::new(&tex_data), tex).unwrap();
+        assert_eq!(decoded.width, 8);
+        assert_eq!(decoded.height, 8);
+        let eq_data = (0usize..(8*8)).flat_map(|i| {
+            if i % 8 >= 4 || i / 8 >= 4 {
+                vec![0u8, 0, 0, 0]
+            } else {
+                vec![255u8, 255, 255, 255]
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(decoded.data, eq_data);
+
+        let (tex, tex_data) = hd.textures[0].as_ref().unwrap();
+        assert_eq!(tex.width, 16);
+        assert_eq!(tex.height, 16);
+        let decoded = crate::anim::read_texture(io::Cursor::new(&tex_data), tex).unwrap();
+        assert_eq!(decoded.width, 16);
+        assert_eq!(decoded.height, 16);
+        let eq_data = (0usize..(16*16)).flat_map(|i| {
+            let col = i % 16;
+            let row = i / 16;
+            if row == 0 || row >= 9 || col == 0 || col >= 9 {
+                vec![0u8, 0, 0, 0]
+            } else {
+                vec![255u8, 255, 255, 255]
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(decoded.data, eq_data);
     }
 }
