@@ -90,6 +90,7 @@ impl SpriteLighting {
         }
         tree.set_fixed_height_mode(true);
         tree.set_activate_on_single_click(true);
+        tree.get_selection().set_mode(gtk::SelectionMode::Multiple);
         let none: Option<&gtk::Adjustment> = None;
         let tree_scroll = gtk::ScrolledWindow::new(none, none);
         tree_scroll.add(&tree);
@@ -190,24 +191,51 @@ impl SpriteLighting {
     }
 
     fn copy_row(&self) {
-        let frame = self.tree.get_cursor().0
-            .and_then(|path| self.store.get_iter(&path))
-            .and_then(|iter| lit_frame_from_store_iter(&self.store, &iter));
-        if let Some(f) = frame {
-            let format = format!("{}, {}, {}, {}, {}", f.x, f.y, f.color, f.intensity, f.radius);
+        use std::fmt::Write;
+        let mut result = String::new();
+        let frames = self.tree.get_selection()
+            .get_selected_rows().0
+            .into_iter()
+            .filter_map(|path| self.store.get_iter(&path))
+            .filter_map(|iter| lit_frame_from_store_iter(&self.store, &iter));
+        for f in frames {
+            writeln!(result, "{}, {}, {}, {}, {}", f.x, f.y, f.color, f.intensity, f.radius)
+                .unwrap();
+        }
+        if !result.is_empty() {
             let atom = gdk::Atom::intern("CLIPBOARD");
             let clip = gtk::Clipboard::get(&atom);
-            clip.set_text(&format);
+            clip.set_text(&result);
         }
     }
 
     fn paste_row(&self) {
-        let frame = frame_from_clipboard();
-        if let Some(frame) = frame {
-            let iter = self.tree.get_cursor().0
-                .and_then(|path| self.store.get_iter(&path));
-            if let Some(iter) = iter {
-                set_lit_frame_in_store(&self.store, &iter, &frame);
+        let frames = match frames_from_clipboard() {
+            Some(s) => s,
+            None => return,
+        };
+        let rows = self.tree.get_selection().get_selected_rows().0;
+        if rows.len() == 0 {
+            return;
+        }
+        if rows.len() == 1 {
+            // Paste starting from current row
+            let index = match rows.get(0).and_then(|path| path.get_indices().get(0).cloned()) {
+                Some(s) => s,
+                None => return,
+            };
+            for (frame, index) in frames.iter().zip(index..) {
+                let path = gtk::TreePath::new_from_indicesv(&[index]);
+                if let Some(iter) = self.store.get_iter(&path) {
+                    set_lit_frame_in_store(&self.store, &iter, frame);
+                }
+            }
+        } else {
+            // Paste over any selected rows
+            for (frame, path) in frames.iter().zip(rows.iter()) {
+                if let Some(iter) = self.store.get_iter(path) {
+                    set_lit_frame_in_store(&self.store, &iter, frame);
+                }
             }
         }
     }
@@ -226,7 +254,7 @@ impl SpriteLighting {
             self.paste_row();
         });
         item.show();
-        if frame_from_clipboard().is_none() {
+        if frames_from_clipboard().is_none() {
             item.set_sensitive(false);
         }
         menu.append(&item);
@@ -334,26 +362,31 @@ impl SpriteLighting {
     }
 }
 
-fn frame_from_clipboard() -> Option<anim_lit::Frame> {
+fn frames_from_clipboard() -> Option<Vec<anim_lit::Frame>> {
     let atom = gdk::Atom::intern("CLIPBOARD");
     let clip = gtk::Clipboard::get(&atom);
     clip.wait_for_text()
         .and_then(|x| {
             let text = x.as_str();
-            let mut tokens = text.split(", ");
-            let frame = anim_lit::Frame {
-                x: tokens.next()?.parse().ok()?,
-                y: tokens.next()?.parse().ok()?,
-                color: tokens.next()?.parse().ok()?,
-                intensity: tokens.next()?.parse().ok()?,
-                radius: tokens.next()?.parse().ok()?,
-            };
-            if tokens.next().is_some() {
-                None
-            } else {
-                Some(frame)
-            }
+            text.split("\n")
+                .filter(|text| !text.is_empty())
+                .map(|text| {
+                    let mut tokens = text.split(", ");
+                    let frame = anim_lit::Frame {
+                        x: tokens.next()?.parse().ok()?,
+                        y: tokens.next()?.parse().ok()?,
+                        color: tokens.next()?.parse().ok()?,
+                        intensity: tokens.next()?.parse().ok()?,
+                        radius: tokens.next()?.parse().ok()?,
+                    };
+                    if tokens.next().is_some() {
+                        None
+                    } else {
+                        Some(frame)
+                    }
+                }).collect::<Option<Vec<_>>>()
         })
+        .filter(|vec| !vec.is_empty())
 }
 
 fn lit_frame_from_store_iter(
