@@ -30,10 +30,10 @@ impl SpriteLighting {
     ) -> Arc<SpriteLighting> {
         use crate::ui_helpers::*;
 
-        let enabled = gtk::CheckButton::new_with_label("Enabled");
+        let enabled = gtk::CheckButton::with_label("Enabled");
         let columns = &[Type::U32, Type::String, Type::I32, Type::I32, Type::U32, Type::U32];
         let store = gtk::ListStore::new(columns);
-        let tree = gtk::TreeView::new_with_model(&store);
+        let tree = gtk::TreeView::with_model(&store);
         for i in 0..6 {
             let col = gtk::TreeViewColumn::new();
             let a;
@@ -154,11 +154,11 @@ impl SpriteLighting {
             }
             if event.get_state().intersects(gdk::ModifierType::CONTROL_MASK) {
                 match event.get_keyval() {
-                    x if x == 'c' as u32 => {
+                    gdk::keys::constants::c => {
                         this.copy_row();
                         return Inhibit(true);
                     }
-                    x if x == 'v' as u32 => {
+                    gdk::keys::constants::v => {
                         this.paste_row();
                         return Inhibit(true);
                     }
@@ -225,7 +225,7 @@ impl SpriteLighting {
                 None => return,
             };
             for (frame, index) in frames.iter().zip(index..) {
-                let path = gtk::TreePath::new_from_indicesv(&[index]);
+                let path = gtk::TreePath::from_indicesv(&[index]);
                 if let Some(iter) = self.store.get_iter(&path) {
                     set_lit_frame_in_store(&self.store, &iter, frame);
                 }
@@ -242,14 +242,14 @@ impl SpriteLighting {
 
     fn make_rclick_menu(self: Arc<Self>) -> gtk::Menu {
         let menu = gtk::Menu::new();
-        let item = gtk::MenuItem::new_with_label("Copy");
+        let item = gtk::MenuItem::with_label("Copy");
         let this = self.clone();
         item.connect_activate(move |_| {
             this.copy_row();
         });
         item.show();
         menu.append(&item);
-        let item = gtk::MenuItem::new_with_label("Paste");
+        let item = gtk::MenuItem::with_label("Paste");
         item.connect_activate(move |_| {
             self.paste_row();
         });
@@ -443,7 +443,7 @@ mod gtk_ext {
     use gtk::subclass::{prelude::*};
     use gtk::prelude::*;
     use glib::translate::*;
-    use glib::{glib_object_subclass, glib_object_impl, glib_object_wrapper, glib_wrapper};
+    use glib::{glib_object_subclass, glib_object_impl, glib_wrapper};
 
     pub struct CellRendererColorC {
     }

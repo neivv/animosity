@@ -65,7 +65,7 @@ impl IntEntry {
     }
 
     pub fn get_value(&self) -> u32 {
-        self.entry.get_text().and_then(|x| x.parse::<u32>().ok()).unwrap_or(0)
+        self.entry.get_text().parse::<u32>().unwrap_or(0)
     }
 
     pub fn connect_actions<A: IsA<gio::ActionMap>>(
@@ -79,25 +79,28 @@ impl IntEntry {
                 Ok(o) => o,
                 Err(_) => return Inhibit(false),
             };
-            if let Some(fix) = fix_text(&s.get_text().unwrap_or_else(|| "".into())) {
+            if let Some(fix) = fix_text(&s.get_text()) {
                 s.set_text(&fix);
             }
             Inhibit(false)
         });
         this.entry.connect_key_press_event(|_s, key| {
-            use gdk::enums::key;
+            use gdk::keys::constants;
+            use glib::translate::ToGlib;
 
             let modifier = key.get_state();
             let key = key.get_keyval();
-            let acceptable = key == key::BackSpace ||
-                key == key::Delete ||
-                key >= '0' as u8 as u32 && key <= '9' as u8 as u32 ||
+            let acceptable = key == constants::BackSpace ||
+                key == constants::Delete ||
+                key.to_unicode()
+                    .filter(|&c| c as u32 >= b'0' as u32 && c as u32 <= b'9' as u32)
+                    .is_some() ||
                 modifier.contains(gdk::ModifierType::CONTROL_MASK);
             if acceptable {
                 // EMIT CHANGE
                 Inhibit(false)
             } else {
-                if key > 65000 {
+                if key.to_glib() > 65000 {
                     return Inhibit(false);
                 }
                 Inhibit(true)
@@ -119,10 +122,8 @@ impl IntEntry {
             let t = this.clone();
             this.entry.connect_property_text_notify(move |s| {
                 if t.disable_edit_events.load(Ordering::Relaxed) == 0 {
-                    if let Some(text) = s.get_text() {
-                        if let Ok(i) = text.parse::<u32>() {
-                            a.activate(Some(&i.into()));
-                        }
+                    if let Ok(i) = s.get_text().parse::<u32>() {
+                        a.activate(Some(&i.into()));
                     }
                 }
             });

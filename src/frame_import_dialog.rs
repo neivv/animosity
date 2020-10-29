@@ -99,10 +99,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 hd2_scale.widget(),
                 &hd2_framedef_status,
             ]);
-            hd2_framedef_filename = hd2_framedef_.text().and_then(|x| match x.is_empty() {
-                true => None,
-                false => Some(x),
-            });
+            hd2_framedef_filename = Some(hd2_framedef_.text()).filter(|x| !x.is_empty());
             hd2_framedef = Some(hd2_framedef_);
             hd2_framedef_bx = Some(label_section("HD2 Frame info file", &bx));
             label_section("HD Frame info file", &framedef_inner_bx)
@@ -121,10 +118,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         ]);
         label_section("Frame info file", &inner_bx)
     };
-    let framedef_filename = framedef.text().and_then(|x| match x.is_empty() {
-        true => None,
-        false => Some(x),
-    });
+    let framedef_filename = Some(framedef.text()).filter(|x| !x.is_empty());
 
     let mut checkboxes = Vec::with_capacity(layer_names.len());
     let mut grp_format = None;
@@ -188,9 +182,8 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let sd_anim_grp_radios;
     let sd_anim_grp_filename;
     if is_sd_anim {
-        let no_grp = gtk::RadioButton::new_with_label("Don't create");
-        let default_name =
-            gtk::RadioButton::new_with_label_from_widget(&no_grp, "Default path");
+        let no_grp = gtk::RadioButton::with_label("Don't create");
+        let default_name = gtk::RadioButton::with_label_from_widget(&no_grp, "Default path");
         let default_grp_path = files.image_grp_path(tex_id.0);
         if default_grp_path.is_some() {
             default_name.set_tooltip_text(Some(
@@ -202,7 +195,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 Uses a path derived from images.dat and images.tbl\n\
                 (Unable to get GRP path)"));
         }
-        let custom_name = gtk::RadioButton::new_with_label_from_widget(&no_grp, "Custom path");
+        let custom_name = gtk::RadioButton::with_label_from_widget(&no_grp, "Custom path");
         let (filename_entry, filename_frame) = crate::int_entry::entry();
         filename_entry.set_sensitive(false);
         let bx = box_vertical(&[
@@ -253,9 +246,9 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     }
 
     let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
-    let ok_button = gtk::Button::new_with_label("Import");
+    let ok_button = gtk::Button::with_label("Import");
     ok_button.set_sensitive(true);
-    let cancel_button = gtk::Button::new_with_label("Cancel");
+    let cancel_button = gtk::Button::with_label("Cancel");
     let w = window.clone();
     cancel_button.connect_clicked(move |_| {
         w.close();
@@ -283,19 +276,16 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             return;
         }
         // Used for grps
-        let dir = match fi_entry.text() {
-            Some(s) => {
-                let mut buf: PathBuf = s.into();
-                buf.pop();
-                if !buf.is_dir() {
-                    return;
-                }
-                buf
+        let dir = {
+            let mut buf: PathBuf = fi_entry.text().into();
+            buf.pop();
+            if !buf.is_dir() {
+                return;
             }
-            None => return,
+            buf
         };
-        let hd2_dir = hd2_fi_entry.as_ref().and_then(|x| x.text()).and_then(|s| {
-            let mut buf: PathBuf = s.into();
+        let hd2_dir = hd2_fi_entry.as_ref().and_then(|s| {
+            let mut buf: PathBuf = s.text().into();
             buf.pop();
             if !buf.is_dir() {
                 None
@@ -386,9 +376,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 set_config_entry("sd_grp_last_selected", &index.to_string());
                 if index == 2 {
                     if let Some(ref entry) = sd_anim_grp_filename {
-                        if let Some(text) = entry.get_text() {
-                            set_config_entry("sd_grp_custom_name", &text);
-                        }
+                        set_config_entry("sd_grp_custom_name", &entry.get_text());
                     }
                 }
                 if index == 0 {
@@ -396,8 +384,8 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 } else {
                     sd_anim_grp_filename.as_ref()
                         .and_then(|entry| {
-                            let text: &str = &entry.get_text()?;
-                            Some(files_root.as_ref()?.join(text))
+                            let text = entry.get_text();
+                            Some(files_root.as_ref()?.join(&*text))
                         })
                 }
             } else {

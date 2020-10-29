@@ -82,20 +82,18 @@ quick_error! {
     pub enum ImageWriteError {
         Io(e: io::Error) {
             from()
-            description("I/O error")
             display("I/O error: {}", e)
         }
         NoFrames {
-            description("No frames")
+            display("No frames")
         }
         TextureDataRequired {
-            description("No texture data set")
+            display("No texture data set")
         }
         OutputTooBig {
-            description("Output file too big")
+            display("Output file too big")
         }
         InvalidRef(referenced: u32) {
-            description("Invalid image reference")
             display("Referencing invalid image {}", referenced)
         }
     }
@@ -105,11 +103,9 @@ quick_error! {
     #[derive(Debug)]
     pub enum ErrKind {
         ImageWrite(image: u16, e: ImageWriteError) {
-            description("Image write error")
             display("Error writing image {}: {}", image, e)
         }
         TextureReadError(image: u16, e: io::Error) {
-            description("Texture read error")
             display("Couldn't read textures for image {}: {}", image, e)
         }
         TooManyLayers {
@@ -128,27 +124,22 @@ quick_error! {
             display("Frame does not exist")
         }
         Format(msg: String) {
-            description("Invalid data")
             display("{}", msg)
         }
         Io(e: io::Error) {
             from()
-            description("I/O error")
             display("I/O error: {}", e)
         }
         Dds(ctx: &'static str, e: String) {
-            description("DDS error")
             display("DDS error on {}: {}", ctx, e)
         }
         NoDxtFormat {
             display("No DXT format in DDS")
         }
         UnsupportedDdsFormat(format: ddsfile::D3DFormat) {
-            description("Unsupported DDS format")
             display("Unsupported DDS format {:?}", format)
         }
         UnknownTextureFormat(magic: u32) {
-            description("Unknown texture format")
             display("Unknown texture format, magic {:08x}", magic)
         }
     }

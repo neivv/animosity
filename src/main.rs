@@ -189,7 +189,7 @@ struct ScrolledList {
 impl ScrolledList {
     fn new() -> ScrolledList {
         let store = gtk::ListStore::new(&[glib::Type::String]);
-        let list = gtk::TreeView::new_with_model(&store);
+        let list = gtk::TreeView::with_model(&store);
         let col = gtk::TreeViewColumn::new();
         let renderer = gtk::CellRendererText::new();
         col.pack_end(&renderer, true);
@@ -213,7 +213,7 @@ impl ScrolledList {
     }
 
     fn select(&self, index: usize) {
-        let path = gtk::TreePath::new_from_indicesv(&[index as i32]);
+        let path = gtk::TreePath::from_indicesv(&[index as i32]);
         let none: Option<&gtk::TreeViewColumn> = None;
         self.list.set_cursor(&path, none, false);
     }
@@ -271,7 +271,7 @@ struct SpriteValues {
 impl SpriteValues {
     fn new() -> SpriteValues {
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let ref_enable = gtk::CheckButton::new_with_label("References image");
+        let ref_enable = gtk::CheckButton::with_label("References image");
         ref_enable.set_sensitive(false);
         let ref_index = IntEntry::new(IntSize::Int16);
         ref_index.frame.set_sensitive(false);
@@ -425,9 +425,9 @@ pub enum SpriteType {
 impl SpriteSelector {
     fn new(sprite_actions: gio::ActionGroup) -> SpriteSelector {
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let sd = gtk::RadioButton::new_with_label("SD");
-        let hd = gtk::RadioButton::new_with_label_from_widget(&sd, "HD");
-        let hd2 = gtk::RadioButton::new_with_label_from_widget(&sd, "HD2");
+        let sd = gtk::RadioButton::with_label("SD");
+        let hd = gtk::RadioButton::with_label_from_widget(&sd, "HD");
+        let hd2 = gtk::RadioButton::with_label_from_widget(&sd, "HD2");
         let list = ScrolledList::new();
         list.root.set_min_content_height(200);
         list.root.set_min_content_width(80);
@@ -891,8 +891,8 @@ impl SpriteInfo {
         let framedef_bx = label_section("Write miscellaneous frame info to..", &framedef_frame);
 
         let button_bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
-        let ok_button = gtk::Button::new_with_label("Export");
-        let cancel_button = gtk::Button::new_with_label("Cancel");
+        let ok_button = gtk::Button::with_label("Export");
+        let cancel_button = gtk::Button::with_label("Cancel");
         let w = window.clone();
         cancel_button.connect_clicked(move |_| {
             w.close();
@@ -910,10 +910,7 @@ impl SpriteInfo {
             if waiting_for_thread.get() {
                 return;
             }
-            let path: PathBuf = match dir_select.text() {
-                Some(s) => s.into(),
-                None => return,
-            };
+            let path: PathBuf = dir_select.text().into();
 
             let tex_id = s.tex_id();
             let mut files = match s.files.try_lock() {
@@ -925,10 +922,7 @@ impl SpriteInfo {
                 _ => return,
             };
 
-            let framedef: PathBuf = match framedef_entry.get_text() {
-                Some(s) => String::from(s).into(),
-                None => return,
-            };
+            let framedef: PathBuf = String::from(framedef_entry.get_text()).into();
             let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
             let files_arc = s.files.clone();
             let frame_count;
@@ -936,7 +930,7 @@ impl SpriteInfo {
             if is_anim {
                 let layers_to_export = checkboxes.iter().map(|(check, entry)| {
                     if check.get_active() {
-                        Some(entry.get_text().map(|x| x.into()).unwrap_or_else(|| String::new()))
+                        Some(entry.get_text().into())
                     } else {
                         None
                     }
@@ -964,8 +958,7 @@ impl SpriteInfo {
                 });
             } else {
                 let prefix = grp_prefix.as_ref()
-                    .and_then(|x| x.get_text())
-                    .map(|x| x.into())
+                    .map(|x| x.get_text().into())
                     .unwrap_or_else(String::new);
                 frame_count = file.layer_count();
                 let single_image = single_image_check2.get_active();
@@ -1973,7 +1966,7 @@ struct SavedCheckbox {
 
 impl SavedCheckbox {
     pub fn new<S: Into<String>>(save_entry: S, label: &str) -> SavedCheckbox {
-        let check = gtk::CheckButton::new_with_label(label);
+        let check = gtk::CheckButton::with_label(label);
         let save_entry = save_entry.into();
         if select_dir::read_config_entry(&save_entry).map(|x| x == "y").unwrap_or(false) {
             check.set_active(true);

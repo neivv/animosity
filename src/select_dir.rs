@@ -72,7 +72,7 @@ pub struct SelectFile {
 
 fn create_common() -> (gtk::Box, gtk::Entry, gtk::Button) {
     let bx = gtk::Box::new(gtk::Orientation::Horizontal, 15);
-    let button = gtk::Button::new_with_label("Select...");
+    let button = gtk::Button::with_label("Select...");
     let (entry, frame) = int_entry::entry();
     //entry.set_sensitive(false);
     let _ = entry.set_property("editable", &false);
@@ -97,7 +97,7 @@ impl SelectDir {
         let w = window.clone();
         button.connect_clicked(move |_| {
             let dir = e.get_text();
-            if let Some(path) = choose_dir_dialog(&w, &dir.map(|x| x.into())) {
+            if let Some(path) = choose_dir_dialog(&w, &dir) {
                 let val = path.to_string_lossy();
                 e.set_text(&val);
                 e.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
@@ -115,8 +115,8 @@ impl SelectDir {
         self.bx.clone().upcast()
     }
 
-    pub fn text(&self) -> Option<String> {
-        self.entry.get_text().map(|x| x.into())
+    pub fn text(&self) -> String {
+        self.entry.get_text().into()
     }
 }
 
@@ -141,9 +141,8 @@ impl SelectFile {
         let w = window.clone();
         let o = on_change_handlers.clone();
         button.connect_clicked(move |_| {
-            let dir = e.get_text().and_then(|x| {
-                Path::new(&x).parent().map(|x| x.to_string_lossy().into_owned())
-            });
+            let dir = e.get_text();
+            let dir = Path::new(&*dir).parent().map(|x| x.to_string_lossy().into_owned());
             if let Some(path) = choose_file_dialog(&w, &dir, filter_name, filter_pattern) {
                 let val = path.to_string_lossy();
                 e.set_text(&val);
@@ -167,8 +166,8 @@ impl SelectFile {
         self.bx.clone().upcast()
     }
 
-    pub fn text(&self) -> Option<String> {
-        self.entry.get_text().map(|x| x.into())
+    pub fn text(&self) -> String {
+        self.entry.get_text().into()
     }
 
     pub fn on_change<F: FnMut(&str) + 'static>(&self, fun: F) {
@@ -211,7 +210,7 @@ fn choose_file_dialog(
     result
 }
 
-fn choose_dir_dialog(parent: &gtk::Window, dir: &Option<String>) -> Option<PathBuf> {
+fn choose_dir_dialog(parent: &gtk::Window, dir: &str) -> Option<PathBuf> {
     let dialog = gtk::FileChooserNative::new(
         Some("Select folder..."),
         Some(parent),
@@ -219,9 +218,7 @@ fn choose_dir_dialog(parent: &gtk::Window, dir: &Option<String>) -> Option<PathB
         Some("Select"),
         Some("Cancel")
     );
-    if let Some(ref dir) = *dir {
-        dialog.set_current_folder(&dir);
-    }
+    dialog.set_current_folder(dir);
     dialog.set_select_multiple(false);
     let result: gtk::ResponseType = dialog.run().into();
     let result = if result == gtk::ResponseType::Accept {
