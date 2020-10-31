@@ -16,6 +16,8 @@ use crate::{SpriteType, Error};
 pub fn export_frames<F: Fn(f32)>(
     file: &files::File<'_>,
     ty: SpriteType,
+    width: i32,
+    height: i32,
     path: &Path,
     framedef_file: &Path,
     layer_prefixes: &[Option<String>],
@@ -32,10 +34,6 @@ pub fn export_frames<F: Fn(f32)>(
     };
 
     let frames = file.frames().ok_or_else(|| anyhow!("Unable to get frames"))?;
-    let values = match file.sprite_values() {
-        Some(s) => s,
-        None => return Err(anyhow!("Couldn't get sprite values")),
-    };
     let enum_prefixes =
         layer_prefixes.iter().enumerate().flat_map(|(i, x)| x.as_ref().map(|x| (i, x)));
     let x_base =
@@ -46,8 +44,8 @@ pub fn export_frames<F: Fn(f32)>(
         .max().unwrap_or(1);
     let y_max = frames.iter().map(|x| (i32::from(x.y_off) + i32::from(x.height)) / scale_div as i32)
         .max().unwrap_or(1);
-    let frame_width = (x_max.max(i32::from(values.width) / scale_div as i32) - x_base) as u32;
-    let frame_height = (y_max.max(i32::from(values.height) / scale_div as i32) - y_base) as u32;
+    let frame_width = (x_max.max(width / scale_div as i32) - x_base) as u32;
+    let frame_height = (y_max.max(height / scale_div as i32) - y_base) as u32;
     let mut multi_frame_images = Vec::new();
     let mut step = 1.0;
     let layer_count = layer_prefixes.iter().filter(|x| x.is_some()).count();

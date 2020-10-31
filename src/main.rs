@@ -7,6 +7,7 @@
 mod anim;
 mod anim_lit;
 mod anim_encoder;
+mod arc_error;
 mod combo_box_enum;
 mod ddsgrp;
 mod frame_export;
@@ -33,7 +34,7 @@ use std::rc::Rc;
 use gio::prelude::*;
 use gtk::prelude::*;
 
-use anyhow::Error;
+use anyhow::{Context, Error};
 use cgmath::conv::array4x4;
 use cgmath::{Matrix4, vec4};
 use glium::backend::glutin::headless::Headless;
@@ -819,6 +820,21 @@ impl SpriteInfo {
             SavedCheckbox::new("frame_export_single_image", "Single image")
         };
 
+        // Sprite dimensions are only used for anim;
+        // if it errors display the error as a warning.
+        let dimensions_result: Option<Result<(u16, u16), _>> = if is_anim {
+            Some(
+                file.dimensions()
+                    .context("WARNING: Cannot get sprite dimensions. \n\
+                        Exported frames may be incorrectly aligned.")
+            )
+        } else {
+            None
+        };
+        let dimensions = dimensions_result.as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|&x| x)
+            .unwrap_or_else(|| (0, 0));
         let mut checkboxes = Vec::with_capacity(layer_names.len());
         let mut grp_prefix = None;
         let mut grp_prefix_text = String::new();
@@ -945,9 +961,12 @@ impl SpriteInfo {
                         _ => return,
                     };
 
+                    let (width, height) = dimensions;
                     let result = frame_export::export_frames(
                         &file,
                         tex_id.1,
+                        i32::from(width),
+                        i32::from(height),
                         &path2,
                         &framedef,
                         &layers_to_export,
@@ -1018,12 +1037,18 @@ impl SpriteInfo {
         });
         button_bx.pack_end(&cancel_button, false, false, 0);
         button_bx.pack_end(&ok_button, false, false, 0);
-        let rest_bx = box_vertical(&[
+        let opt_error_label;
+        let mut input_parts: Vec<&dyn ui_helpers::BoxableWidget>  = vec![
             &filename_bx,
             &framedef_bx,
             single_image_check.widget(),
             &layers_bx,
-        ]);
+        ];
+        if let Some(Err(ref error)) = dimensions_result {
+            opt_error_label = gtk::Label::new(Some(&format!("{:?}", error)));
+            input_parts.push(&opt_error_label);
+        }
+        let rest_bx = box_vertical(&input_parts);
         let bx = box_vertical(&[
             &rest_bx,
             &progress,

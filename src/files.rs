@@ -1,14 +1,16 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fs;
-use std::io::{BufReader, BufWriter, Cursor, Seek, Write};
+use std::io::{BufReader, BufWriter, Cursor, Seek, Write, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use byteorder::{ReadBytesExt, LE};
+use byteorder::{ByteOrder, ReadBytesExt, LE, LittleEndian};
 
 use crate::anim::{self, SpriteValues};
 use crate::anim_lit::{self, Lit};
+use crate::arc_error::ArcError;
 use crate::ddsgrp;
 use crate::{Error, SpriteType};
 
@@ -17,8 +19,9 @@ pub struct Files {
     mainsd_anim: Option<(PathBuf, anim::Anim)>,
     root_path: Option<PathBuf>,
     open_files: OpenFiles,
+    sd_grp_sizes: SdGrpSizes,
     edits: HashMap<(usize, SpriteType), Edit>,
-    images_dat: Vec<u8>,
+    images_dat: ImagesDat,
     images_tbl: Vec<u8>,
     lit: Option<LitFile>,
 }
@@ -95,6 +98,20 @@ impl LitFile {
 static DEFAULT_IMAGES_TBL: &[u8] = include_bytes!("../arr/images.tbl");
 static DEFAULT_IMAGES_DAT: &[u8] = include_bytes!("../arr/images.dat");
 
+/// Cache reads of grps for SD frame sizes
+struct SdGrpSizes {
+    /// Sprite -> Read results.
+    results: HashMap<usize, Result<(u16, u16), ArcError>>,
+}
+
+impl SdGrpSizes {
+    fn new() -> SdGrpSizes {
+        SdGrpSizes {
+            results: Default::default(),
+        }
+    }
+}
+
 struct OpenFiles {
     anim: Vec<(anim::Anim, usize, SpriteType)>,
     grp: Vec<(ddsgrp::DdsGrp, usize, SpriteType)>,
@@ -111,6 +128,125 @@ impl OpenFiles {
     fn clear(&mut self) {
         self.anim.clear();
         self.grp.clear();
+    }
+}
+
+struct ImagesDat {
+    data: Vec<u8>,
+    is_ext: bool,
+    entries: u32,
+    fields: u32,
+}
+
+impl ImagesDat {
+    fn empty() -> ImagesDat {
+        ImagesDat {
+            data: Vec::new(),
+            is_ext: false,
+            entries: 0,
+            fields: 0,
+        }
+    }
+
+    fn from_data(data: Vec<u8>) -> Result<ImagesDat, Error> {
+        let mut pos = &data[..];
+        let magic = pos.read_u32::<LE>()?;
+        if magic != 0x2b746144 {
+            if data.len() == 37962 {
+                Ok(ImagesDat {
+                    data,
+                    is_ext: false,
+                    entries: 999,
+                    fields: 0xe,
+                })
+            } else {
+                Err(anyhow!("Expected 37962 bytes or extended dat"))
+            }
+        } else {
+            let major_ver = pos.read_u16::<LE>()?;
+            let minor_ver = pos.read_u16::<LE>()?;
+            if major_ver != 1 || minor_ver < 1 {
+                return Err(anyhow!("Invalid version {}, {}", major_ver, minor_ver));
+            }
+            let entries = pos.read_u32::<LE>()?;
+            let fields = pos.read_u32::<LE>()?;
+            Ok(ImagesDat {
+                data,
+                is_ext: true,
+                entries,
+                fields,
+            })
+        }
+    }
+
+    fn get_field(&self, field: u16, entry: u32) -> Result<u32, Error> {
+        struct FieldDecl {
+            field_id: u16,
+            flags: u16,
+            offset: u32,
+            size: u32,
+        }
+
+        static IMAGES_DAT_FIELD_SIZES: &[u8] = &[
+            4, 1, 1, 1, 1, 1, 1, 4,
+            4, 4, 4, 4, 4, 4,
+        ];
+        if entry >= self.entries {
+            return Err(
+                anyhow!("Cannot read dat entry {}, there are {} entries", entry, self.entries)
+            );
+        }
+        if self.is_ext {
+            let field_decl = (0..self.fields)
+                .map(|i| i as usize)
+                .filter_map(|i| self.data.get(0x10 + i..)?.get(..0xc))
+                .map(|slice| {
+                    let field_id = LittleEndian::read_u16(&slice[0..]);
+                    let flags = LittleEndian::read_u16(&slice[2..]);
+                    let offset = LittleEndian::read_u32(&slice[4..]);
+                    let size = LittleEndian::read_u32(&slice[8..]);
+                    FieldDecl {
+                        field_id,
+                        flags,
+                        offset,
+                        size,
+                    }
+                })
+                .find(|x| x.field_id == field);
+            let field_decl = field_decl
+                .ok_or_else(|| anyhow!("Field 0x{:x} is not available", field))?;
+            let slice = self.data.get((field_decl.offset as usize)..)
+                .and_then(|x| x.get(..(field_decl.size as usize)))
+                .ok_or_else(|| anyhow!("Corrupt field decl"))?;
+            let result = match field_decl.flags & 0x3 {
+                0 => slice.get(entry as usize).map(|&x| x as u32),
+                1 => slice.get((entry as usize * 2)..)
+                    .and_then(|mut x| x.read_u16::<LE>().ok())
+                    .map(|x| x as u32),
+                2 => slice.get((entry as usize * 4)..)
+                    .and_then(|mut x| x.read_u32::<LE>().ok()),
+                3 | _ => slice.get((entry as usize * 8)..)
+                    .and_then(|mut x| x.read_u16::<LE>().ok())
+                    .and_then(|x| u32::try_from(x).ok()),
+            };
+            result.ok_or_else(|| anyhow!("Corrupt field decl, reading entry 0x{:x}", entry))
+        } else {
+            let field_size = IMAGES_DAT_FIELD_SIZES.get(field as usize)
+                .map(|&x| x as usize)
+                .ok_or_else(|| anyhow!("Field 0x{:x} is not available", field))?;
+            let field_offset = IMAGES_DAT_FIELD_SIZES
+                .iter()
+                .take(field as usize)
+                .fold(0usize, |x, &size| x + size as usize * 999);
+            let entry_offset = field_offset + field_size * entry as usize;
+            let result = match field_size {
+                1 => self.data.get(entry_offset).map(|&x| x as u32),
+                4 => self.data.get((entry as usize * 4)..)
+                    .and_then(|mut x| x.read_u32::<LE>().ok()),
+                _ => return Err(anyhow!("Invalid field size for field 0x{:x}", field)),
+            };
+            result.ok_or_else(|| anyhow!("Corrupt field decl, reading entry 0x{:x}", entry))
+        }
     }
 }
 
@@ -148,6 +284,7 @@ pub struct AnimFiles {
 
 pub struct File<'a> {
     location: FileLocation<'a>,
+    sprite_type: SpriteType,
     sprite_values: Option<SpriteValues>,
     frames: Option<&'a [anim::Frame]>,
     // Two variations since it can be patched or original, and they are in differently typed
@@ -158,10 +295,16 @@ pub struct File<'a> {
     grp_textures: Option<&'a [(ddsgrp::Frame, Vec<u8>)]>,
     image_ref: Option<Option<u32>>,
     path: &'a Path,
+    /// Some for SD sprites, None otherwise
+    /// Contains dimensions read from the corresponding GRP set in images.dat,
+    /// or an error if it could not be read.
+    grp_dimensions: Option<Result<(u16, u16), ArcError>>,
 }
 
 pub enum FileLocation<'a> {
+    /// Index to a single sprite in larger anim (Mainsd)
     Multiple(usize, &'a anim::Anim),
+    /// A single-sprite anim
     Separate(&'a anim::Anim),
     DdsGrp(&'a ddsgrp::DdsGrp),
 }
@@ -212,6 +355,24 @@ impl<'a> File<'a> {
                 FileLocation::Separate(ref file) => file.texture(0, layer)?,
                 FileLocation::DdsGrp(ref grp) => grp.frame(layer)?,
             })
+        }
+    }
+
+    /// Dimensions that apply for all of the frames.
+    /// Anim only.
+    /// SD sprites use values from GRPs, HD from SpriteValues.
+    pub fn dimensions(&self) -> Result<(u16, u16), ArcError> {
+        if self.sprite_type == SpriteType::Sd {
+            if let FileLocation::Multiple(..) = self.location {
+                if let Some(ref result) = self.grp_dimensions {
+                    return result.clone();
+                }
+            }
+            return Err(anyhow!("Not applicable").into());
+        } else {
+            self.sprite_values()
+                .ok_or_else(|| anyhow!("Not applicable").into())
+                .map(|x| (x.width, x.height))
         }
     }
 
@@ -363,8 +524,9 @@ impl Files {
             mainsd_anim: None,
             root_path: None,
             open_files: OpenFiles::new(),
+            sd_grp_sizes: SdGrpSizes::new(),
             edits: HashMap::new(),
-            images_dat: Vec::new(),
+            images_dat: ImagesDat::empty(),
             images_tbl: Vec::new(),
             lit: None,
         }
@@ -429,8 +591,10 @@ impl Files {
                 mainsd_anim,
                 root_path: Some(root.into()),
                 open_files: OpenFiles::new(),
+                sd_grp_sizes: SdGrpSizes::new(),
                 edits: HashMap::new(),
-                images_dat,
+                images_dat: ImagesDat::from_data(images_dat)
+                    .context("Invalid images.dat")?,
                 images_tbl,
                 lit,
             }, index))
@@ -448,8 +612,9 @@ impl Files {
                         mainsd_anim: Some((one_filename.into(), mainsd)),
                         root_path: Some(one_filename.into()),
                         open_files: OpenFiles::new(),
+                        sd_grp_sizes: SdGrpSizes::new(),
                         edits: HashMap::new(),
-                        images_dat: Vec::new(),
+                        images_dat: ImagesDat::empty(),
                         images_tbl: Vec::new(),
                         lit: None,
                     }, None))
@@ -460,8 +625,9 @@ impl Files {
                         mainsd_anim: None,
                         root_path: Some(one_filename.into()),
                         open_files: OpenFiles::new(),
+                        sd_grp_sizes: SdGrpSizes::new(),
                         edits: HashMap::new(),
-                        images_dat: Vec::new(),
+                        images_dat: ImagesDat::empty(),
                         images_tbl: Vec::new(),
                         lit: None,
                     }, None))
@@ -475,7 +641,6 @@ impl Files {
         sprite: usize,
         ty: SpriteType
     ) -> Result<Option<File<'a>>, Error> {
-        let edit_values = self.edits.get(&(sprite, ty));
         let location;
         let sprite_values;
         let frames;
@@ -483,6 +648,11 @@ impl Files {
         let mut texture_sizes = None;
         let mut grp_textures = None;
         let image_ref;
+        let grp_dimensions = if ty == SpriteType::Sd {
+            Some(self.grp_dimensions_for_sprite(sprite))
+        } else {
+            None
+        };
         let path = file_path(self.mainsd_anim.as_ref().map(|x| &*x.0), &self.sprites, sprite, ty);
         let path = match path {
             Some(s) => s,
@@ -491,6 +661,7 @@ impl Files {
                 return Ok(None);
             }
         };
+        let edit_values = self.edits.get(&(sprite, ty));
 
         match edit_values {
             Some(x) => match *x {
@@ -599,6 +770,7 @@ impl Files {
 
         Ok(Some(File {
             location,
+            sprite_type: ty,
             sprite_values,
             frames,
             textures,
@@ -606,6 +778,7 @@ impl Files {
             grp_textures,
             image_ref,
             path,
+            grp_dimensions,
         }))
     }
 
@@ -920,22 +1093,58 @@ impl Files {
         Ok(result?)
     }
 
+    /// Returns width/height of the grp that is referenced in images.dat.
+    /// (E.g. The return value is only meaningful for SD sprites)
+    fn grp_dimensions_for_sprite(&mut self, sprite: usize) -> Result<(u16, u16), ArcError> {
+        let root = self.root_path
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("Cannot get GRP dimensions if the files are not in \
+                    placed in same layout as in CASC")
+            })?;
+        let images_dat = &self.images_dat;
+        let images_tbl = &self.images_tbl;
+        self.sd_grp_sizes.results.entry(sprite).or_insert_with(|| {
+            let grp_path = image_grp_path(images_dat, images_tbl, sprite as u32)?;
+            let path = root.join(&grp_path);
+            if path.is_file() {
+                let mut file = fs::File::open(&path)
+                    .with_context(|| format!("Unable to open {}", path.display()))?;
+                let mut buffer = [0u8; 6];
+                file.read_exact(&mut buffer[..])
+                    .with_context(|| format!("Unable to read {}", path.display()))?;
+                Ok((LittleEndian::read_u16(&buffer[2..]), LittleEndian::read_u16(&buffer[4..])))
+            } else {
+                Err(anyhow!("File {} doesn't exist", path.display()).into())
+            }
+        }).clone()
+    }
+
     pub fn image_grp_path(&self, image_id: usize) -> Option<String> {
-        if self.images_tbl.is_empty() || self.images_dat.is_empty() {
-            return None;
-        }
-        let tbl_index = self.images_dat.get(image_id.checked_mul(4)?..)?
-            .read_u32::<LE>().ok()? as usize;
-        let tbl_offset = self.images_tbl.get(tbl_index.checked_mul(2)?..)?
-            .read_u16::<LE>().ok()? as usize;
-        let string_data = self.images_tbl.get(tbl_offset..)?;
-        let string_len = string_data.iter().position(|&x| x == 0)?;
-        Some(format!("unit\\{}", String::from_utf8_lossy(&string_data[..string_len])))
+        image_grp_path(&self.images_dat, &self.images_tbl, image_id as u32).ok()
     }
 
     pub fn lit(&mut self) -> Option<&mut LitFile> {
         self.lit.as_mut()
     }
+}
+
+fn image_grp_path(
+    images_dat: &ImagesDat,
+    images_tbl: &[u8],
+    image_id: u32,
+) -> Result<String, Error> {
+    let tbl_index = images_dat.get_field(0, image_id)? as usize;
+    let string = Some(())
+        .and_then(|()| {
+            let tbl_offset = images_tbl.get(tbl_index.checked_mul(2)?..)?
+                .read_u16::<LE>().ok()? as usize;
+            let string_data = images_tbl.get(tbl_offset..)?;
+            let string_len = string_data.iter().position(|&x| x == 0)?;
+            Some(format!("unit\\{}", String::from_utf8_lossy(&string_data[..string_len])))
+        })
+        .ok_or_else(|| anyhow!("Unable to read images.tbl index {}", tbl_index))?;
+    Ok(string)
 }
 
 fn temp_file_path(orig_file: &Path) -> PathBuf {
