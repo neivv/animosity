@@ -25,6 +25,7 @@ fxhash = "0.2"
 glium = "0.28"
 image = { version = "0.23", features = ["png"], default-features = false }
 log = "0.4"
+once_cell = "1.4"
 parking_lot = "0.11"
 png = "0.16"
 quick-error = "2.0"

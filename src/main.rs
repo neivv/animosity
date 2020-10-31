@@ -10,6 +10,7 @@ mod anim_encoder;
 mod arc_error;
 mod combo_box_enum;
 mod ddsgrp;
+mod default_grp_sizes;
 mod frame_export;
 mod frame_import;
 mod frame_import_dialog;

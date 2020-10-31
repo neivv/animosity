@@ -1115,7 +1115,11 @@ impl Files {
                     .with_context(|| format!("Unable to read {}", path.display()))?;
                 Ok((LittleEndian::read_u16(&buffer[2..]), LittleEndian::read_u16(&buffer[4..])))
             } else {
-                Err(anyhow!("File {} doesn't exist", path.display()).into())
+                if let Some(size) = crate::default_grp_sizes::grp_default_size(&grp_path) {
+                    Ok(size)
+                } else {
+                    Err(anyhow!("File {} doesn't exist", path.display()).into())
+                }
             }
         }).clone()
     }

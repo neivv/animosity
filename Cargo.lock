@@ -65,6 +65,7 @@ dependencies = [
  "gtk",
  "image",
  "log",
+ "once_cell",
  "parking_lot",
  "png",
  "quick-error",
