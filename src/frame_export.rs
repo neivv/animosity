@@ -52,6 +52,14 @@ pub fn export_frames<F: Fn(f32)>(
     let step_count = (layer_count * frames.len()) as f32;
     for (i, prefix) in enum_prefixes {
         let texture = file.texture(i)?;
+        if texture.is_paletted {
+            return Err(anyhow!("Paletted textures are not supported"));
+        }
+        let texture = RgbaTexture {
+            data: texture.data,
+            width: texture.width,
+            height: texture.height,
+        };
         if single_image {
             assert!(frames.len() > 0);
             let image_width = frame_width * frames.len().min(16) as u32;
@@ -60,7 +68,8 @@ pub fn export_frames<F: Fn(f32)>(
             let out = File::create(path)
                 .with_context(|| format!("Unable to create {}", path.to_string_lossy()))?;
             let out = BufWriter::new(out);
-            let mut bytes = vec![0; (image_width * image_height * 4) as usize];
+            let buffer_size = image_width * image_height * 4;
+            let mut bytes = vec![0; buffer_size as usize];
             for (n, frame) in frames.iter().enumerate() {
                 let x = (n as u32 % 16) * frame_width;
                 let y = (n as u32 / 16) * frame_height;
@@ -172,17 +181,17 @@ fn decode_frame_to_buf(
     let x = x + blank_left;
     let y = y + blank_top;
     let mut byte_pos = ((y * stride) + x) as usize * 4;
+    let byte_stride = stride as usize * 4;
+    let frame_width_bytes = frame_width as usize * 4;
     for row in 0..frame_height {
-        let tex_start = (
-            (tex_y as u32 + row) * texture.width + tex_x as u32
-        ) as usize * 4;
-        let image_row = texture.data.get(tex_start..tex_start + frame_width as usize * 4);
+        let tex_start = ((tex_y as u32 + row) * texture.width + tex_x as u32) as usize * 4;
+        let image_row = texture.data.get(tex_start..tex_start + frame_width_bytes);
         let image_row = match image_row {
             Some(s) => s,
             None => return Err(anyhow!("Bad frame data")),
         };
-        (&mut bytes[byte_pos..byte_pos + frame_width as usize * 4]).copy_from_slice(image_row);
-        byte_pos += stride as usize * 4;
+        (&mut bytes[byte_pos..byte_pos + frame_width_bytes]).copy_from_slice(image_row);
+        byte_pos += byte_stride;
     }
     Ok(())
 }
@@ -214,9 +223,7 @@ fn write_frame(
     let mut bytes = Vec::with_capacity((out_width * out_height * 4) as usize);
     bytes.extend((0..blank_top * out_width).flat_map(|_| [0, 0, 0, 0].iter().cloned()));
     for row in 0..(out_height - blank_top - blank_bottom) {
-        let tex_start = (
-            (tex_y as u32 + row) * texture.width + tex_x as u32
-        ) as usize * 4;
+        let tex_start = ((tex_y as u32 + row) * texture.width + tex_x as u32) as usize * 4;
         let image_row = texture.data.get(tex_start..tex_start + frame_width as usize * 4);
         let image_row = match image_row {
             Some(s) => s,
@@ -253,6 +260,7 @@ pub fn export_grp<F: Fn(f32)>(
 
     let layer_count = file.layer_count();
     let mut step = 1.0;
+    let palette = file.palette();
     if single_image {
         // Adding 20% for PNG encoding
         let step_count = layer_count as f32 * 1.25;
@@ -279,22 +287,36 @@ pub fn export_grp<F: Fn(f32)>(
         let out = File::create(path)
             .with_context(|| format!("Unable to create {}", path.to_string_lossy()))?;
         let out = BufWriter::new(out);
-        let mut bytes = vec![0; (image_width * image_height * 4) as usize];
+        let has_palette = palette.is_some();
+        let buffer_size = match has_palette {
+            true => (image_width * image_height) as usize,
+            false => (image_width * image_height) as usize * 4,
+        };
+        let mut bytes = vec![0; buffer_size];
         let mut frame_size_overrides = HashMap::new();
         for i in 0..layer_count {
             let texture = file.texture(i)?;
             let x = (i % frames_per_row) as u32 * frame_width;
             let y = (i / frames_per_row) as u32 * frame_height;
 
-
-            let mut byte_pos = ((y * image_width) + x) as usize * 4;
+            let out_width_bytes = match has_palette {
+                true => image_width as usize,
+                false => image_width as usize * 4,
+            };
+            let in_width_bytes = match has_palette {
+                true => texture.width as usize,
+                false => texture.width as usize * 4,
+            };
+            let mut byte_pos = match has_palette {
+                true => ((y * image_width) + x) as usize,
+                false => ((y * image_width) + x) as usize * 4,
+            };
             for row in 0..texture.height {
-                let tex_start = (row * texture.width) as usize * 4;
-                let image_row =
-                    &texture.data[tex_start..tex_start + texture.width as usize * 4];
-                (&mut bytes[byte_pos..byte_pos + texture.width as usize * 4])
+                let tex_start = row as usize * in_width_bytes;
+                let image_row = &texture.data[tex_start..][..in_width_bytes];
+                (&mut bytes[byte_pos..][..in_width_bytes])
                     .copy_from_slice(image_row);
-                byte_pos += image_width as usize * 4;
+                byte_pos += out_width_bytes;
             }
             if texture.width != frame_width || texture.height != frame_height {
                 frame_size_overrides.insert(i as u32, (texture.width, texture.height));
@@ -304,7 +326,12 @@ pub fn export_grp<F: Fn(f32)>(
         }
 
         let mut encoder = png::Encoder::new(out, image_width, image_height);
-        encoder.set_color(png::ColorType::RGBA);
+        if let Some(palette) = palette {
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_palette(rgba_to_rgb(palette));
+        } else {
+            encoder.set_color(png::ColorType::RGBA);
+        }
         let mut encoder = encoder.write_header()?;
         encoder.write_image_data(&bytes)?;
 
@@ -328,7 +355,13 @@ pub fn export_grp<F: Fn(f32)>(
             let out = BufWriter::new(out);
 
             let mut encoder = png::Encoder::new(out, texture.width, texture.height);
-            encoder.set_color(png::ColorType::RGBA);
+            if let Some(palette) = palette {
+                encoder.set_color(png::ColorType::Indexed);
+                encoder.set_palette(rgba_to_rgb(palette));
+                encoder.set_depth(png::BitDepth::Eight);
+            } else {
+                encoder.set_color(png::ColorType::RGBA);
+            }
             let mut encoder = encoder.write_header()?;
             encoder.write_image_data(&texture.data)?;
             // Uh, multi-frame images which are single frame each =)
@@ -359,4 +392,11 @@ pub fn export_grp<F: Fn(f32)>(
     serde_json::to_writer_pretty(&mut frame_info_file, &frame_info)?;
 
     Ok(())
+}
+
+fn rgba_to_rgb(input: &[u8]) -> Vec<u8> {
+    input
+        .chunks_exact(4)
+        .flat_map(|x| x.iter().copied().take(3))
+        .collect()
 }

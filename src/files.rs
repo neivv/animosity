@@ -328,20 +328,22 @@ impl<'a> File<'a> {
         }
     }
 
-    pub fn texture(&self, layer: usize) -> Result<anim::RgbaTexture, Error> {
+    pub fn texture(&self, layer: usize) -> Result<anim::RawTexture, Error> {
         if let Some(ref tex) = self.textures {
             let tex = tex.get(layer).and_then(|x| x.as_ref())
                 .ok_or_else(|| anyhow!("No texture for layer {}", layer))?;
-            return Ok(anim::read_texture(Cursor::new(&tex.1), &tex.0)?);
+            return Ok(anim::read_texture(Cursor::new(&tex.1), &tex.0)?.into());
         }
         if let Some(ref tex) = self.grp_textures {
             let tex = tex.get(layer).ok_or_else(|| anyhow!("No frame {}", layer))?;
             let anim_tex = tex.0.to_anim_texture_coords();
-            return Ok(anim::read_texture(Cursor::new(&tex.1), &anim_tex)?);
+            return Ok(anim::read_texture(Cursor::new(&tex.1), &anim_tex)?.into());
         }
         if let Some(Some(img_ref)) = self.image_ref {
             Ok(match self.location {
-                FileLocation::Multiple(_, ref mainsd) => mainsd.texture(img_ref as usize, layer)?,
+                FileLocation::Multiple(_, ref mainsd) => {
+                    mainsd.texture(img_ref as usize, layer)?.into()
+                }
                 FileLocation::Separate(..) => {
                     return Err(anyhow!("Ref in HD sprite"));
                 }
@@ -351,10 +353,24 @@ impl<'a> File<'a> {
             })
         } else {
             Ok(match self.location {
-                FileLocation::Multiple(sprite, ref mainsd) => mainsd.texture(sprite, layer)?,
-                FileLocation::Separate(ref file) => file.texture(0, layer)?,
+                FileLocation::Multiple(sprite, ref mainsd) => {
+                    mainsd.texture(sprite, layer)?.into()
+                }
+                FileLocation::Separate(ref file) => {
+                    file.texture(0, layer)?.into()
+                }
                 FileLocation::DdsGrp(ref grp) => grp.frame(layer)?,
             })
+        }
+    }
+
+    /// Gets the palette if the file has any
+    /// (Only SD tileset vr4 usually has them)
+    pub fn palette(&self) -> Option<&[u8]> {
+        match self.location {
+            FileLocation::Multiple(..) => None,
+            FileLocation::Separate(..) => None,
+            FileLocation::DdsGrp(ref grp) => grp.palette(),
         }
     }
 
@@ -1182,8 +1198,10 @@ fn file_location<'a>(
             }
         }
         Some(&SpriteFiles::DdsGrp(ref f)) => {
-            let file = fs::File::open(f)?;
-            let grp = ddsgrp::DdsGrp::read(file)?;
+            let file = fs::File::open(f)
+                .with_context(|| format!("Opening {}", f.display()))?;
+            let grp = ddsgrp::DdsGrp::read(file)
+                .with_context(|| format!("Parsing {}", f.display()))?;
             open_files.grp.push((grp, sprite, ty));
             Ok(Some(FileLocation::DdsGrp(&open_files.grp.last().unwrap().0)))
         }

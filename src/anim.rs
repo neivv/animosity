@@ -744,6 +744,25 @@ pub struct RgbaTexture {
     pub height: u32,
 }
 
+/// Either RGBA or paletted texture.
+pub struct RawTexture {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub is_paletted: bool,
+}
+
+impl From<RgbaTexture> for RawTexture {
+    fn from(val: RgbaTexture) -> RawTexture {
+        RawTexture {
+            data: val.data,
+            width: val.width,
+            height: val.height,
+            is_paletted: false,
+        }
+    }
+}
+
 fn read_textures<R: Read>(mut r: R, count: u32) -> Result<Vec<Option<Texture>>, io::Error> {
     (0..count).map(|_| {
         let texture = Texture {

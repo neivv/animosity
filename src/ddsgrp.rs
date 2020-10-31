@@ -10,6 +10,9 @@ pub struct DdsGrp {
     pub scale: u8,
     pub version: u8,
     pub frames: Vec<Frame>,
+    // Only used if flag 0x10 is set
+    // 256 R/G/B/0 entries
+    palette: Vec<u8>,
     read: Mutex<Box<dyn ReadSeek>>,
 }
 
@@ -40,26 +43,54 @@ impl DdsGrp {
     pub fn read<R: Read + Seek + Send + 'static>(mut r: R) -> Result<DdsGrp, Error> {
         let _size = r.read_u32::<LE>()?;
         let frame_count = r.read_u16::<LE>()?;
-        let scale = r.read_u8()?;
+        let flags = r.read_u8()?;
         let version = r.read_u8()?;
+        let scale = flags & 0xf;
+        let has_palette = flags & 0x10 != 0;
+        if !matches!(scale, 1 | 2 | 4) {
+            return Err(ErrKind::Format(format!("Invalid scale {}", scale)).into());
+        }
+        if flags & 0xe0 != 0 {
+            return Err(ErrKind::Format(format!("Unknown flags 0x{:x}", flags & 0xe0)).into());
+        }
         if version != 16 {
             return Err(ErrKind::Format(format!("Unknown version {}", version)).into());
         }
         let mut frames = Vec::with_capacity(frame_count as usize);
-        for _ in 0..frame_count {
-            let unknown = r.read_u32::<LE>()?;
+        let mut palette = Vec::new();
+        if has_palette {
             let width = r.read_u16::<LE>()?;
             let height = r.read_u16::<LE>()?;
-            let size = r.read_u32::<LE>()?;
-            let offset = r.seek(SeekFrom::Current(0))? as u32;
-            r.seek(SeekFrom::Current(size as i64))?;
-            frames.push(Frame {
-                unknown,
-                width,
-                height,
-                size,
-                offset,
-            });
+            palette.resize_with(0x400, || 0);
+            r.read_exact(&mut palette[..])?;
+            let mut offset = 0x40c;
+            let frame_size = width as u32 * height as u32;
+            for _ in 0..frame_count {
+                frames.push(Frame {
+                    unknown: 0,
+                    width,
+                    height,
+                    size: frame_size,
+                    offset,
+                });
+                offset += frame_size;
+            }
+        } else {
+            for _ in 0..frame_count {
+                let unknown = r.read_u32::<LE>()?;
+                let width = r.read_u16::<LE>()?;
+                let height = r.read_u16::<LE>()?;
+                let size = r.read_u32::<LE>()?;
+                let offset = r.seek(SeekFrom::Current(0))? as u32;
+                r.seek(SeekFrom::Current(size as i64))?;
+                frames.push(Frame {
+                    unknown,
+                    width,
+                    height,
+                    size,
+                    offset,
+                });
+            }
         }
         Ok(DdsGrp {
             frame_count,
@@ -67,14 +98,40 @@ impl DdsGrp {
             version,
             frames,
             read: Mutex::new(Box::new(r)),
+            palette,
         })
     }
 
-    pub fn frame(&self, frame: usize) -> Result<anim::RgbaTexture, Error> {
+    pub fn has_palette(&self) -> bool {
+        !self.palette.is_empty()
+    }
+
+    pub fn palette(&self) -> Option<&[u8]> {
+        if self.has_palette() {
+            Some(&self.palette[..])
+        } else {
+            None
+        }
+    }
+
+    pub fn frame(&self, frame: usize) -> Result<anim::RawTexture, Error> {
         let frame = self.frames.get(frame).ok_or_else(|| ErrKind::NoFrame)?;
         let mut read = self.read.lock().unwrap();
         read.seek(SeekFrom::Start(frame.offset as u64))?;
-        Ok(anim::read_texture(&mut *read, &frame.to_anim_texture_coords())?)
+        if self.has_palette() {
+            let frame_size = frame.width as usize * frame.height as usize;
+            let mut buffer = vec![0u8; frame_size];
+            read.read_exact(&mut buffer[..])?;
+            Ok(anim::RawTexture {
+                data: buffer,
+                width: frame.width.into(),
+                height: frame.height.into(),
+                is_paletted: true,
+            })
+        } else {
+            let texture = anim::read_texture(&mut *read, &frame.to_anim_texture_coords())?;
+            Ok(texture.into())
+        }
     }
 
     pub fn texture_size(&self, frame: usize) -> Option<anim::Texture> {

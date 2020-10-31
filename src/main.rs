@@ -41,7 +41,7 @@ use cgmath::{Matrix4, vec4};
 use glium::backend::glutin::headless::Headless;
 use glium::framebuffer::SimpleFrameBuffer;
 use glium::index::{IndexBuffer, PrimitiveType};
-use glium::texture::{self, Texture2d};
+use glium::texture::{self, ClientFormat, Texture2d};
 use glium::vertex::VertexBuffer;
 
 use crate::files::SpriteFiles;
@@ -770,8 +770,11 @@ impl SpriteInfo {
                 Err(e) => {
                     cairo.set_source_rgb(0.0, 0.0, 0.0);
                     cairo.set_font_size(15.0);
-                    cairo.move_to(0.0, 20.0);
-                    cairo.show_text(&e.to_string());
+                    let text = format!("{:?}", e);
+                    for (i, line) in text.lines().enumerate() {
+                        cairo.move_to(0.0, 20.0 + 20.0 * i as f64);
+                        cairo.show_text(&line);
+                    }
                 }
             }
             Inhibit(true)
@@ -956,25 +959,26 @@ impl SpriteInfo {
                     file.frames().map(|x| x.len()).unwrap_or(0);
                 let single_image = single_image_check2.get_active();
                 std::thread::spawn(move || {
-                    let mut files = files_arc.lock();
-                    let file = match files.file(tex_id.0, tex_id.1) {
-                        Ok(Some(o)) => o,
-                        _ => return,
-                    };
+                    let send2 = send.clone();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        let mut files = files_arc.lock();
+                        let file = files.file(tex_id.0, tex_id.1)?
+                            .ok_or_else(|| anyhow!("No file?"))?;
 
-                    let (width, height) = dimensions;
-                    let result = frame_export::export_frames(
-                        &file,
-                        tex_id.1,
-                        i32::from(width),
-                        i32::from(height),
-                        &path2,
-                        &framedef,
-                        &layers_to_export,
-                        single_image,
-                        |step| send.send(Progress::Progress(step)).unwrap(),
-                    );
-                    let _ = send.send(Progress::Done(result));
+                        let (width, height) = dimensions;
+                        frame_export::export_frames(
+                            &file,
+                            tex_id.1,
+                            i32::from(width),
+                            i32::from(height),
+                            &path2,
+                            &framedef,
+                            &layers_to_export,
+                            single_image,
+                            |step| send.send(Progress::Progress(step)).unwrap(),
+                        )
+                    })).unwrap_or_else(|e| Err(error_from_panic(e)));
+                    let _ = send2.send(Progress::Done(result));
                 });
             } else {
                 let prefix = grp_prefix.as_ref()
@@ -983,21 +987,22 @@ impl SpriteInfo {
                 frame_count = file.layer_count();
                 let single_image = single_image_check2.get_active();
                 std::thread::spawn(move || {
-                    let mut files = files_arc.lock();
-                    let file = match files.file(tex_id.0, tex_id.1) {
-                        Ok(Some(o)) => o,
-                        _ => return,
-                    };
+                    let send2 = send.clone();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        let mut files = files_arc.lock();
+                        let file = files.file(tex_id.0, tex_id.1)?
+                            .ok_or_else(|| anyhow!("No file?"))?;
 
-                    let result = frame_export::export_grp(
-                        &file,
-                        &path2,
-                        &prefix,
-                        &framedef,
-                        single_image,
-                        |step| send.send(Progress::Progress(step)).unwrap(),
-                    );
-                    let _ = send.send(Progress::Done(result));
+                        frame_export::export_grp(
+                            &file,
+                            &path2,
+                            &prefix,
+                            &framedef,
+                            single_image,
+                            |step| send.send(Progress::Progress(step)).unwrap(),
+                        )
+                    })).unwrap_or_else(|e| Err(error_from_panic(e)));
+                    let _ = send2.send(Progress::Done(result));
                 });
             }
             let rest_of_ui = rest_of_ui2.clone();
@@ -1102,17 +1107,33 @@ impl SpriteInfo {
         if let Some(index) = cached {
             Ok(Some(&cached_textures[index].0))
         } else {
-            let image = cache_file.texture(tex_id.2)?;
-            let image = glium::texture::RawImage2d::from_raw_rgba(
-                image.data,
-                (image.width, image.height),
-            );
-            let texture = Texture2d::with_format(
-                facade,
-                image,
-                texture::UncompressedFloatFormat::U8U8U8U8,
-                texture::MipmapsOption::AutoGeneratedMipmaps,
-            )?;
+            let image = cache_file.texture(tex_id.2)
+                .with_context(|| format!("Failed to get texture {}", tex_id.2))?;
+            let texture = if image.is_paletted {
+                let image = glium::texture::RawImage2d {
+                    data: (&image.data[..]).into(),
+                    width: image.width,
+                    height: image.height,
+                    format: ClientFormat::U8,
+                };
+                Texture2d::with_format(
+                    facade,
+                    image,
+                    texture::UncompressedFloatFormat::U8,
+                    texture::MipmapsOption::AutoGeneratedMipmaps,
+                )?
+            } else {
+                let image = glium::texture::RawImage2d::from_raw_rgba(
+                    image.data,
+                    (image.width, image.height),
+                );
+                Texture2d::with_format(
+                    facade,
+                    image,
+                    texture::UncompressedFloatFormat::U8U8U8U8,
+                    texture::MipmapsOption::AutoGeneratedMipmaps,
+                )?
+            };
             // Hacky, clear cache when sprite id changes, so the sprite can be reloaded
             // by clicking away and back.
             let clear = cached_textures.first().map(|x| (x.1).0 != tex_id.0).unwrap_or(false);
@@ -1140,7 +1161,7 @@ impl SpriteInfo {
             Ok(o) => o,
             Err(_) => return Ok(()),
         };
-        let mut file = match files.file(tex_id.0, tex_id.1)? {
+        let mut file = match files.file(tex_id.0, tex_id.1).context("Failed to open file")? {
             Some(s) => s,
             None => return Ok(()),
         };
@@ -2017,5 +2038,15 @@ impl SavedCheckbox {
 
     pub fn get_active(&self) -> bool {
         self.check.get_active()
+    }
+}
+
+fn error_from_panic(e: Box<dyn std::any::Any + Send + 'static>) -> Error {
+    match e.downcast::<String>() {
+        Ok(s) => anyhow!("An error occured: {}", s),
+        Err(e) => match e.downcast::<&'static str>() {
+            Ok(s) => anyhow!("An error occured: {}", s),
+            _ => anyhow!("An error occured (No other information available)"),
+        }
     }
 }
