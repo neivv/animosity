@@ -12,7 +12,7 @@ use glium::Surface;
 use crate::SpriteType;
 use crate::anim::RawTexture;
 use crate::gl;
-use crate::shaders;
+use crate::shaders::{self, Program};
 
 pub struct RenderState {
     gl: gl::Context,
@@ -79,7 +79,7 @@ impl RenderState {
             .magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest)
             .minify_filter(glium::uniforms::MinifySamplerFilter::Linear);
 
-        let (mut buf, _facade) = self.gl.framebuf();
+        let (mut buf, facade) = self.gl.framebuf();
         let (buf_width, buf_height) = self.gl.buf_dimensions();
         let buf_stride = self.gl.stride();
         // scale to view, scale + transform view to
@@ -111,7 +111,7 @@ impl RenderState {
         buf.draw(
             &self.draw_params.vertices,
             &self.draw_params.indices,
-            &self.draw_params.program,
+            self.draw_params.program.program(facade),
             &uniforms,
             &glium_params,
         )?;
@@ -168,7 +168,7 @@ impl RenderState {
         buf.draw(
             &lines.vertices,
             &lines.indices,
-            &self.draw_params.lines.program,
+            self.draw_params.lines.program.program(facade),
             &uniforms,
             &glium_params,
         )?;
@@ -228,7 +228,7 @@ struct DrawParams {
     vertices: VertexBuffer<gl::Vertex>,
     indices: IndexBuffer<u32>,
     lines: DrawLines,
-    program: glium::program::Program,
+    program: Program,
     cached_textures: Vec<(Rc<Texture2d>, TextureId)>,
 }
 
@@ -240,7 +240,7 @@ struct TextureLines(Vec<(TextureId, LineBuffer)>);
 
 struct DrawLines {
     texture_lines: TextureLines,
-    program: glium::program::Program,
+    program: Program,
 }
 
 impl TextureLines {
@@ -321,12 +321,7 @@ struct LineBuffer {
 
 impl DrawLines {
     fn new(gl: &mut gl::Context) -> DrawLines {
-        let program = glium::program::Program::from_source(
-            gl.facade(),
-            shaders::LINE_VERTEX,
-            shaders::LINE_FRAGMENT,
-            None,
-        ).expect("GL line program creation failed");
+        let program = Program::new(gl.facade(), &shaders::LINE_VERTEX, &shaders::LINE_FRAGMENT);
         DrawLines {
             texture_lines: TextureLines(Vec::new()),
             program,
@@ -334,13 +329,8 @@ impl DrawLines {
     }
 }
 
-fn sprite_render_program(gl: &mut gl::Context) -> glium::program::Program {
-    glium::program::Program::from_source(
-        gl.facade(),
-        shaders::SPRITE_VERTEX,
-        shaders::SPRITE_FRAGMENT,
-        None,
-    ).expect("GL sprite program creation failed")
+fn sprite_render_program(gl: &mut gl::Context) -> Program {
+    Program::new(gl.facade(), &shaders::SPRITE_VERTEX, &shaders::SPRITE_FRAGMENT)
 }
 
 #[derive(Copy, Clone)]
