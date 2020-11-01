@@ -19,6 +19,7 @@ mod gl;
 mod int_entry;
 mod files;
 mod recurse_checked_mutex;
+mod render;
 mod select_dir;
 mod shaders;
 mod widget_lighting;
@@ -36,17 +37,12 @@ use gio::prelude::*;
 use gtk::prelude::*;
 
 use anyhow::{Context, Error};
-use cgmath::conv::array4x4;
-use cgmath::{Matrix4, vec4};
-use glium::backend::glutin::headless::Headless;
-use glium::framebuffer::SimpleFrameBuffer;
-use glium::index::{IndexBuffer, PrimitiveType};
-use glium::texture::{self, ClientFormat, Texture2d};
-use glium::vertex::VertexBuffer;
+use glium::texture::{Texture2d};
 
 use crate::files::SpriteFiles;
 use crate::int_entry::{IntEntry, IntSize};
 use crate::recurse_checked_mutex::Mutex;
+use crate::render::{Color, Rect, RenderState, TextureId};
 
 fn init_log() -> Result<(), fern::InitError> {
     if cfg!(debug_assertions) {
@@ -460,147 +456,6 @@ impl SpriteSelector {
     }
 }
 
-struct DrawParams {
-    vertices: VertexBuffer<gl::Vertex>,
-    indices: IndexBuffer<u32>,
-    lines: DrawLines,
-    program: glium::program::Program,
-    cached_textures: Vec<(Texture2d, TextureId)>,
-}
-
-/// sprite_id, type, layer
-#[derive(Eq, Copy, Clone, PartialEq, Debug)]
-struct TextureId(usize, SpriteType, usize);
-
-struct DrawLines {
-    pub texture_lines: TextureLines,
-    program: glium::program::Program,
-}
-
-struct TextureLines(Vec<(TextureId, LineBuffer)>);
-
-impl TextureLines {
-    fn buffer_for_texture<F: FnOnce() -> Vec<(Rect, Color, u8)>>(
-        &mut self,
-        facade: &Headless,
-        tex_id: &TextureId,
-        init: F,
-    ) -> &mut LineBuffer {
-        match self.0.iter().position(|x| x.0 == *tex_id) {
-            Some(s) => &mut self.0[s].1,
-            None => {
-                let rects = init();
-                let mut vertices = Vec::with_capacity(rects.len() * 4);
-                for &(ref rect, color, ty) in rects.iter() {
-                    let color = [color.0, color.1, color.2, color.3];
-                    let left = rect.x as f32;
-                    let top = rect.y as f32;
-                    let right = left + rect.width as f32;
-                    let bottom = top + rect.height as f32;
-                    vertices.extend([
-                        gl::LineVertex {
-                            pos: [left, top],
-                            color,
-                            ty,
-                        },
-                        gl::LineVertex {
-                            pos: [right, top],
-                            color,
-                            ty,
-                        },
-                        gl::LineVertex {
-                            pos: [left, bottom],
-                            color,
-                            ty,
-                        },
-                        gl::LineVertex {
-                            pos: [right, bottom],
-                            color,
-                            ty,
-                        },
-                    ].iter().cloned());
-                }
-                let mut indices = Vec::with_capacity(rects.len() * 8);
-                for i in 0..rects.len() {
-                    let i = i as u32 * 4;
-                    indices.extend(
-                        [i, i + 1, i + 1, i + 3, i + 3, i + 2, i + 2, i].iter().cloned()
-                    );
-                }
-                let vertices = VertexBuffer::new(facade, &vertices)
-                    .expect("Couldn't create vertex buffer");
-                let indices = IndexBuffer::new(facade, PrimitiveType::LinesList, &indices)
-                    .expect("Couldn't create vertex buffer");
-
-                // Hacky, clear cache when sprite id changes, so the sprite can be reloaded
-                // by clicking away and back.
-                let clear = self.0.first().map(|x| (x.0).0 != tex_id.0).unwrap_or(false);
-                if clear {
-                    self.0.clear();
-                }
-
-                self.0.push((tex_id.clone(), LineBuffer {
-                    vertices,
-                    indices,
-                }));
-                let pos = self.0.len() - 1;
-                &mut self.0[pos].1
-            }
-        }
-    }
-}
-
-struct LineBuffer {
-    vertices: VertexBuffer<gl::LineVertex>,
-    indices: IndexBuffer<u32>,
-}
-
-impl DrawLines {
-    fn new(gl: &mut gl::Context) -> DrawLines {
-        let program = glium::program::Program::from_source(
-            gl.facade(),
-            shaders::LINE_VERTEX,
-            shaders::LINE_FRAGMENT,
-            None,
-        ).expect("GL line program creation failed");
-        DrawLines {
-            texture_lines: TextureLines(Vec::new()),
-            program,
-        }
-    }
-}
-
-#[derive(Copy, Clone)]
-struct Color(f32, f32, f32, f32);
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-struct Rect {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-impl Rect {
-    fn new(x: u32, y: u32, width: u32, height: u32) -> Rect {
-        Rect {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-}
-
-fn sprite_render_program(gl: &mut gl::Context) -> glium::program::Program {
-    glium::program::Program::from_source(
-        gl.facade(),
-        shaders::SPRITE_VERTEX,
-        shaders::SPRITE_FRAGMENT,
-        None,
-    ).expect("GL sprite program creation failed")
-}
-
 pub struct SpriteInfo {
     bx: gtk::Box,
     file_list: gtk::TextBuffer,
@@ -701,61 +556,29 @@ impl SpriteInfo {
         values.connect_actions(&result.sprite_actions);
 
         let this = result.clone();
-        let gl: Rc<RefCell<Option<(gl::Context, DrawParams)>>> = Rc::new(RefCell::new(None));
+        let gl: Rc<RefCell<Option<RenderState>>> = Rc::new(RefCell::new(None));
         draw_area.connect_draw(move |s, cairo| {
             let mut gl = gl.borrow_mut();
             let rect = s.get_allocation();
-            let &mut (ref mut gl, ref mut draw_params) = gl.get_or_insert_with(|| {
-                let mut gl = gl::Context::new(rect.width as u32, rect.height as u32);
-                let vertices = gl.set_vertices(&[
-                    gl::Vertex { pos: [-1.0, 1.0], tex: [0.0, 1.0] },
-                    gl::Vertex { pos: [1.0, 1.0], tex: [1.0, 1.0] },
-                    gl::Vertex { pos: [-1.0, -1.0], tex: [0.0, 0.0] },
-                    gl::Vertex { pos: [1.0, -1.0], tex: [1.0, 0.0] },
-                ]);
-                let indices = glium::index::IndexBuffer::new(
-                    gl.facade(),
-                    PrimitiveType::TrianglesList,
-                    &[0, 1, 2, 1, 3, 2],
-                ).expect("Unable to create index buffer");
-                let program = sprite_render_program(&mut gl);
-                let lines = DrawLines::new(&mut gl);
-                (gl, DrawParams {
-                    vertices,
-                    indices,
-                    program,
-                    cached_textures: Vec::new(),
-                    lines,
-                })
+            let render_state = gl.get_or_insert_with(|| {
+                RenderState::new(rect.width as u32, rect.height as u32)
             });
             {
                 let mut clear_reqs = this.draw_clear_requests.borrow_mut();
                 for tex_id in clear_reqs.drain(..) {
                     if tex_id.0 == !0 {
                         // Hack for clear all
-                        draw_params.cached_textures.clear();
-                        draw_params.lines.texture_lines.0.clear();
+                        render_state.clear_cache_all();
                     } else {
-                        draw_params.cached_textures.retain(|x| x.1 != tex_id);
-                        draw_params.lines.texture_lines.0.retain(|x| x.0 != tex_id);
+                        render_state.clear_cached(tex_id);
                     }
                 }
             }
-            gl.resize_buf(rect.width as u32, rect.height as u32);
-            let result = {
-                let size = gl.buf_dimensions();
-                let (mut buf, facade) = gl.framebuf();
-                this.render_sprite(
-                    &mut buf,
-                    facade,
-                    draw_params,
-                    size,
-                    gl.stride(),
-                )
-            };
+            render_state.resize_buf(rect.width as u32, rect.height as u32);
+            let result = this.render_sprite(render_state);
             match result {
                 Ok(()) => {
-                    let (data, width, height) = gl.framebuf_bytes();
+                    let (data, width, height) = render_state.framebuf_bytes();
                     let surface = cairo::ImageSurface::create_for_data(
                         data.into_boxed_slice(),
                         cairo::Format::ARgb32,
@@ -1096,66 +919,24 @@ impl SpriteInfo {
         TextureId(index, selected_type, layer)
     }
 
-    fn sprite_texture<'a>(
+    fn sprite_texture(
         &self,
-        facade: &Headless,
-        cached_textures: &'a mut Vec<(Texture2d, TextureId)>,
+        render_state: &mut RenderState,
         cache_file: &mut files::File<'_>,
-    ) -> Result<Option<&'a Texture2d>, Error> {
+    ) -> Result<Option<Rc<Texture2d>>, Error> {
         let tex_id = self.tex_id();
-        let cached = cached_textures.iter().position(|x| x.1 == tex_id);
-        if let Some(index) = cached {
-            Ok(Some(&cached_textures[index].0))
-        } else {
+        render_state.cached_texture(tex_id, || {
             let image = cache_file.texture(tex_id.2)
                 .with_context(|| format!("Failed to get texture {}", tex_id.2))?;
-            let texture = if image.is_paletted {
-                let image = glium::texture::RawImage2d {
-                    data: (&image.data[..]).into(),
-                    width: image.width,
-                    height: image.height,
-                    format: ClientFormat::U8,
-                };
-                Texture2d::with_format(
-                    facade,
-                    image,
-                    texture::UncompressedFloatFormat::U8,
-                    texture::MipmapsOption::AutoGeneratedMipmaps,
-                )?
-            } else {
-                let image = glium::texture::RawImage2d::from_raw_rgba(
-                    image.data,
-                    (image.width, image.height),
-                );
-                Texture2d::with_format(
-                    facade,
-                    image,
-                    texture::UncompressedFloatFormat::U8U8U8U8,
-                    texture::MipmapsOption::AutoGeneratedMipmaps,
-                )?
-            };
-            // Hacky, clear cache when sprite id changes, so the sprite can be reloaded
-            // by clicking away and back.
-            let clear = cached_textures.first().map(|x| (x.1).0 != tex_id.0).unwrap_or(false);
-            if clear {
-                cached_textures.clear();
-            }
-            cached_textures.push((texture, tex_id));
-            Ok(Some(&cached_textures.last().unwrap().0))
-        }
+            Ok(image)
+        })
     }
 
     fn render_sprite(
         &self,
-        buf: &mut SimpleFrameBuffer<'_>,
-        facade: &Headless,
-        draw_params: &mut DrawParams,
-        (buf_width, buf_height): (u32, u32),
-        buf_stride: u32,
+        render_state: &mut RenderState,
     ) -> Result<(), Error> {
-        use glium::Surface;
-
-        buf.clear_color(0.0, 0.0, 0.0, 1.0);
+        render_state.clear_framebuf();
         let tex_id = self.tex_id();
         let mut files = match self.files.try_lock() {
             Ok(o) => o,
@@ -1166,50 +947,11 @@ impl SpriteInfo {
             None => return Ok(()),
         };
 
-        let texture = self.sprite_texture(facade, &mut draw_params.cached_textures, &mut file)?;
+        let texture = self.sprite_texture(render_state, &mut file)?;
         if let Some(texture) = texture {
-            let glium_params = glium::draw_parameters::DrawParameters {
-                blend: glium::Blend::alpha_blending(),
-                ..Default::default()
-            };
-            let sampler = glium::uniforms::Sampler::new(texture)
-                .magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest)
-                .minify_filter(glium::uniforms::MinifySamplerFilter::Linear);
-
-            // scale to view, scale + transform view to
-            let tex_width = texture.width() as f32;
-            let tex_height = texture.height() as f32;
-            let mut render_width = tex_width.min(buf_width as f32);
-            let mut render_height = tex_height.min(buf_height as f32);
-            // Keep aspect ratio
-            if render_width / tex_width < render_height / tex_height {
-                render_height = (render_width / tex_width) * tex_height;
-            } else {
-                render_width = (render_height / tex_height) * tex_width;
-            }
-            // (render_width / buf_width) * (buf_width / buf_stride)
-            let scale_x = render_width / buf_stride as f32;
-            let scale_y = render_height / buf_height as f32;
-            let shift_x = -1.0 + buf_width as f32 / buf_stride as f32;
-            let shift_y = 0.0;
-            let tex_to_window = Matrix4::from_cols(
-                vec4(scale_x,   0.0,        0.0,    0.0),
-                vec4(0.0,       scale_y,    0.0,    0.0),
-                vec4(0.0,       0.0,        1.0,    0.0),
-                vec4(shift_x,   shift_y,    0.0,    1.0),
-            );
-            let uniforms = uniform! {
-                transform: array4x4(tex_to_window),
-                tex: sampler,
-            };
-            buf.draw(
-                &draw_params.vertices,
-                &draw_params.indices,
-                &draw_params.program,
-                &uniforms,
-                &glium_params,
-            )?;
-            let lines = draw_params.lines.texture_lines.buffer_for_texture(facade, &tex_id, || {
+            render_state.render_sprite(&texture)
+                .context("Failed to render sprite")?;
+            render_state.render_lines(tex_id, &texture, || {
                 let div = match tex_id.1 {
                     // Hd2 has Hd coordinates?? BW seems to divide them too
                     SpriteType::Hd2 => 2,
@@ -1230,26 +972,8 @@ impl SpriteInfo {
                         result.push((rect, green, 1));
                     }
                 }
-
                 result
-            });
-            let pixel_to_tex = Matrix4::from_cols(
-                vec4(2.0 / tex_width,   0.0,                0.0,    0.0),
-                vec4(0.0,               2.0 / tex_height,   0.0,    0.0),
-                vec4(0.0,               0.0,                1.0,    0.0),
-                vec4(-1.0,              -1.0,               0.0,    1.0),
-            );
-            let uniforms = uniform! {
-                //transform: array4x4(pixel_to_tex * tex_to_window),
-                transform: array4x4(tex_to_window * pixel_to_tex),
-            };
-            buf.draw(
-                &lines.vertices,
-                &lines.indices,
-                &draw_params.lines.program,
-                &uniforms,
-                &glium_params,
-            )?;
+            }).context("Failed to render lines")?;
         }
         Ok(())
     }
