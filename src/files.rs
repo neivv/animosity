@@ -366,6 +366,7 @@ impl<'a> File<'a> {
 
     /// Gets the palette if the file has any
     /// (Only SD tileset vr4 usually has them)
+    /// RGB0 format
     pub fn palette(&self) -> Option<&[u8]> {
         match self.location {
             FileLocation::Multiple(..) => None,

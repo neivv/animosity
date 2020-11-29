@@ -197,5 +197,8 @@ macro_rules! shader {
 
 pub static SPRITE_VERTEX: Shader = shader!("sprite_vertex.glsl");
 pub static SPRITE_FRAGMENT: Shader = shader!("sprite_fragment.glsl");
+// Same as sprite vertex
+pub static PALETTED_VERTEX: Shader = shader!("sprite_vertex.glsl");
+pub static PALETTED_FRAGMENT: Shader = shader!("paletted_fragment.glsl");
 pub static LINE_VERTEX: Shader = shader!("line_vertex.glsl");
 pub static LINE_FRAGMENT: Shader = shader!("line_fragment.glsl");

@@ -37,7 +37,7 @@ use gio::prelude::*;
 use gtk::prelude::*;
 
 use anyhow::{Context, Error};
-use glium::texture::{Texture2d};
+use glium::texture::{Texture1d, Texture2d};
 
 use crate::files::SpriteFiles;
 use crate::int_entry::{IntEntry, IntSize};
@@ -923,13 +923,26 @@ impl SpriteInfo {
         &self,
         render_state: &mut RenderState,
         cache_file: &mut files::File<'_>,
-    ) -> Result<Option<Rc<Texture2d>>, Error> {
+    ) -> Result<Rc<Texture2d>, Error> {
         let tex_id = self.tex_id();
         render_state.cached_texture(tex_id, || {
             let image = cache_file.texture(tex_id.2)
                 .with_context(|| format!("Failed to get texture {}", tex_id.2))?;
             Ok(image)
         })
+    }
+
+    fn palette_texture(
+        &self,
+        render_state: &mut RenderState,
+        cache_file: &mut files::File<'_>,
+    ) -> Result<Option<Rc<Texture1d>>, Error> {
+        let palette = match cache_file.palette() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        render_state.cached_palette_texture(palette)
+            .map(Some)
     }
 
     fn render_sprite(
@@ -948,33 +961,37 @@ impl SpriteInfo {
         };
 
         let texture = self.sprite_texture(render_state, &mut file)?;
-        if let Some(texture) = texture {
+        let palette_texture = self.palette_texture(render_state, &mut file)?;
+        if let Some(palette) = palette_texture {
+            render_state.render_paletted(&texture, &palette)
+                .context("Failed to render paletted sprite")?;
+        } else {
             render_state.render_sprite(&texture)
                 .context("Failed to render sprite")?;
-            render_state.render_lines(tex_id, &texture, || {
-                let div = match tex_id.1 {
-                    // Hd2 has Hd coordinates?? BW seems to divide them too
-                    SpriteType::Hd2 => 2,
-                    _ => 1,
-                };
-                let mut result = Vec::with_capacity(32);
-                let red = Color(1.0, 0.0, 0.0, 1.0);
-                let green = Color(0.0, 1.0, 0.0, 1.0);
-                result.push((Rect::new(0, 0, texture.width(), texture.height()), red, 0));
-                if let Some(frames) = file.frames() {
-                    for f in frames {
-                        let rect = Rect::new(
-                            f.tex_x as u32 / div,
-                            f.tex_y as u32 / div,
-                            f.width as u32 / div,
-                            f.height as u32 / div,
-                        );
-                        result.push((rect, green, 1));
-                    }
-                }
-                result
-            }).context("Failed to render lines")?;
         }
+        render_state.render_lines(tex_id, &texture, || {
+            let div = match tex_id.1 {
+                // Hd2 has Hd coordinates?? BW seems to divide them too
+                SpriteType::Hd2 => 2,
+                _ => 1,
+            };
+            let mut result = Vec::with_capacity(32);
+            let red = Color(1.0, 0.0, 0.0, 1.0);
+            let green = Color(0.0, 1.0, 0.0, 1.0);
+            result.push((Rect::new(0, 0, texture.width(), texture.height()), red, 0));
+            if let Some(frames) = file.frames() {
+                for f in frames {
+                    let rect = Rect::new(
+                        f.tex_x as u32 / div,
+                        f.tex_y as u32 / div,
+                        f.width as u32 / div,
+                        f.height as u32 / div,
+                    );
+                    result.push((rect, green, 1));
+                }
+            }
+            result
+        }).context("Failed to render lines")?;
         Ok(())
     }
 
