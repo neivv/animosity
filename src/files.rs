@@ -254,8 +254,8 @@ impl ImagesDat {
 enum Edit {
     Ref(u32),
     Values(EditValues),
-    // Frames, scale
-    Grp(Vec<(ddsgrp::Frame, Vec<u8>)>, u8),
+    // Frames, scale, palette
+    Grp(Vec<(ddsgrp::Frame, Vec<u8>)>, u8, Option<Vec<u8>>),
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +293,10 @@ pub struct File<'a> {
     texture_sizes: Option<&'a [Option<anim::Texture>]>,
     // Sigh, third
     grp_textures: Option<&'a [(ddsgrp::Frame, Vec<u8>)]>,
+    // Set when palette is edited.
+    // Outer option is None if not edited, inner option is None if edited to have
+    // no palette.
+    palette: Option<Option<&'a [u8]>>,
     image_ref: Option<Option<u32>>,
     path: &'a Path,
     /// Some for SD sprites, None otherwise
@@ -336,8 +340,17 @@ impl<'a> File<'a> {
         }
         if let Some(ref tex) = self.grp_textures {
             let tex = tex.get(layer).ok_or_else(|| anyhow!("No frame {}", layer))?;
-            let anim_tex = tex.0.to_anim_texture_coords();
-            return Ok(anim::read_texture(Cursor::new(&tex.1), &anim_tex)?.into());
+            if self.palette().is_some() {
+                return Ok(anim::RawTexture {
+                    data: tex.1.clone(),
+                    width: tex.0.width.into(),
+                    height: tex.0.height.into(),
+                    is_paletted: true,
+                });
+            } else {
+                let anim_tex = tex.0.to_anim_texture_coords();
+                return Ok(anim::read_texture(Cursor::new(&tex.1), &anim_tex)?.into());
+            }
         }
         if let Some(Some(img_ref)) = self.image_ref {
             Ok(match self.location {
@@ -368,10 +381,14 @@ impl<'a> File<'a> {
     /// (Only SD tileset vr4 usually has them)
     /// RGB0 format
     pub fn palette(&self) -> Option<&[u8]> {
-        match self.location {
-            FileLocation::Multiple(..) => None,
-            FileLocation::Separate(..) => None,
-            FileLocation::DdsGrp(ref grp) => grp.palette(),
+        if let Some(palette) = self.palette {
+            palette
+        } else {
+            match self.location {
+                FileLocation::Multiple(..) => None,
+                FileLocation::Separate(..) => None,
+                FileLocation::DdsGrp(ref grp) => grp.palette(),
+            }
         }
     }
 
@@ -664,6 +681,7 @@ impl Files {
         let textures;
         let mut texture_sizes = None;
         let mut grp_textures = None;
+        let mut palette = None;
         let image_ref;
         let grp_dimensions = if ty == SpriteType::Sd {
             Some(self.grp_dimensions_for_sprite(sprite))
@@ -730,7 +748,7 @@ impl Files {
                     }
                     location = FileLocation::Multiple(sprite, mainsd);
                 }
-                Edit::Grp(ref grp_edits, _scale) => {
+                Edit::Grp(ref grp_edits, _scale, ref edit_palette) => {
                     let loc = file_location(
                         self.mainsd_anim.as_ref().map(|x| &x.1),
                         &mut self.open_files,
@@ -748,6 +766,7 @@ impl Files {
                     textures = None;
                     image_ref = None;
                     grp_textures = Some(&**grp_edits);
+                    palette = Some(edit_palette.as_ref().map(|x| &**x));
                 }
             },
             None => {
@@ -793,6 +812,7 @@ impl Files {
             textures,
             texture_sizes,
             grp_textures,
+            palette,
             image_ref,
             path,
             grp_dimensions,
@@ -915,10 +935,12 @@ impl Files {
         sprite: usize,
         changes: Vec<(ddsgrp::Frame, Vec<u8>)>,
         scale: u8,
+        palette: Option<Vec<u8>>,
     ) {
-        let entry = self.edits.entry((sprite, SpriteType::Sd));
-        let values = entry.or_insert_with(|| Edit::Grp(Vec::new(), 0));
-        *values = Edit::Grp(changes, scale);
+        self.edits.insert(
+            (sprite, SpriteType::Sd),
+            Edit::Grp(changes, scale, palette),
+        );
     }
 
     /// Does nothing if sprite/ty is currently Ref
@@ -1035,8 +1057,8 @@ impl Files {
                             tex_edits
                         )?;
                     } else {
-                        if let Edit::Grp(ref edits, scale) = *edit {
-                            ddsgrp::DdsGrp::write(&mut out, scale, &edits)?;
+                        if let Edit::Grp(ref edits, scale, ref palette) = *edit {
+                            ddsgrp::DdsGrp::write(&mut out, scale, &edits, palette.as_deref())?;
                         }
                     }
                 } else {

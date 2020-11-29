@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::Context;
@@ -17,12 +17,14 @@ use crate::files;
 use crate::frame_info::{FrameInfo};
 use crate::{SpriteType, Error};
 
+// If `format` isn't set it is assumed to be paletted, in which case the first image must
+// have one in it.
 pub fn import_frames_grp<F: Fn(f32) + Sync>(
     files: &mut files::Files,
     frame_info: &FrameInfo,
     dir: &Path,
     frame_scale: f32,
-    format: anim::TextureFormat,
+    format: Option<anim::TextureFormat>,
     sprite: usize,
     scale: u8,
     report_progress: F,
@@ -31,16 +33,32 @@ pub fn import_frames_grp<F: Fn(f32) + Sync>(
     let tls = thread_local::ThreadLocal::new();
     let step = AtomicUsize::new(1);
     let step_count = frame_info.frame_count as f32;
+    let needs_palette = format.is_none();
+    // Palette uses just palette of the first frame.
+    let palette = Mutex::new(None);
+    let palette_set = AtomicBool::new(false);
 
     let mut frames = (0..frame_info.frame_count).into_par_iter()
         .map(|i| {
             let tls_cache = tls.get_or(|| RefCell::new(TlsImageDataCache::default()));
             let mut tls_cache = tls_cache.borrow_mut();
             let mut frame_reader =
-                FrameReader::new(dir, &image_data_cache, &mut tls_cache);
+                FrameReader::new(dir, &image_data_cache, &mut tls_cache, needs_palette);
 
-            let (data, width, height) = frame_reader.read_frame(frame_info, 0, i, frame_scale)?;
-            let data = anim_encoder::encode(&data, width, height, format);
+            let (data, width, height, frame_palette) =
+                frame_reader.read_frame(frame_info, 0, i, frame_scale)?;
+            let data = if let Some(format) = format {
+                anim_encoder::encode(&data, width, height, format)
+            } else {
+                data
+            };
+            if needs_palette && palette_set.swap(true, Ordering::Relaxed) == false {
+                *palette.lock().unwrap() = Some(
+                    (*frame_palette
+                        .ok_or_else(|| anyhow!("Palette is required"))?)
+                        .clone()
+                );
+            }
             let step = step.fetch_add(1, Ordering::Relaxed);
             report_progress((step as f32) / step_count);
             let frame = ddsgrp::Frame {
@@ -58,7 +76,8 @@ pub fn import_frames_grp<F: Fn(f32) + Sync>(
     frames.sort_by_key(|x| x.0);
     let frames = frames.into_iter().map(|x| x.1).collect();
 
-    files.set_grp_changes(sprite, frames, scale);
+    let palette = palette.into_inner().unwrap();
+    files.set_grp_changes(sprite, frames, scale, palette);
     Ok(())
 }
 
@@ -66,6 +85,7 @@ struct FrameReader<'a> {
     dir: &'a Path,
     image_data_cache: &'a Mutex<ImageDataCache>,
     tls_cache: &'a mut TlsImageDataCache,
+    use_palette: bool,
 }
 
 // ImageDataCache is the "root" object, but it won't keep anything alive by itself.
@@ -76,24 +96,51 @@ struct FrameReader<'a> {
 // won't free the TLS data on thread end, ending up everything getting buffered),
 // but rayon's worker threads should behave well.
 
+/// Paletted images can't be scaled without de/repaletting them.
+/// Use raw data for palette and image::RgbaImage otherwise
+enum ImageData {
+    Paletted(Vec<u8>, u32, u32, Arc<Vec<u8>>),
+    Image(RgbaImage),
+}
+
+impl ImageData {
+    pub fn width(&self) -> u32 {
+        match *self {
+            ImageData::Paletted(_, width, _, _) => width,
+            ImageData::Image(ref image) => image.width(),
+        }
+    }
+
+    pub fn height(&self) -> u32 {
+        match *self {
+            ImageData::Paletted(_, _, height, _) => height,
+            ImageData::Image(ref image) => image.height(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct ImageDataCache {
-    loaded: Vec<Weak<(RgbaImage, PathBuf)>>,
+    loaded: Vec<Weak<(ImageData, PathBuf)>>,
 }
 
 #[derive(Default)]
 struct TlsImageDataCache {
-    loaded: Vec<Arc<(RgbaImage, PathBuf)>>,
+    loaded: Vec<Arc<(ImageData, PathBuf)>>,
 }
 
 impl TlsImageDataCache {
-    fn get(&self, path: &Path) -> Option<&RgbaImage> {
+    fn get(&self, path: &Path) -> Option<&ImageData> {
         self.loaded.iter().find(|x| x.1 == path).map(|x| &x.0)
     }
 }
 
 impl ImageDataCache {
-    fn load_png(&mut self, filename: &Path) -> Result<TlsImageDataCache, Error> {
+    fn load_png(
+        &mut self,
+        filename: &Path,
+        paletted: bool,
+    ) -> Result<TlsImageDataCache, Error> {
         let mut strong_loaded =
             self.loaded.iter().filter_map(|x| x.upgrade()).collect::<Vec<_>>();
         // Free any memory that was droped in all TLS caches but had weak pointers here
@@ -101,7 +148,7 @@ impl ImageDataCache {
         if !strong_loaded.iter().any(|x| x.1 == filename) {
             let file = File::open(&filename)
                 .with_context(|| format!("Unable to open {}", filename.to_string_lossy()))?;
-            let image = load_png(BufReader::new(file))
+            let image = load_png(BufReader::new(file), paletted)
                 .with_context(|| format!("Unable to load PNG {}", filename.to_string_lossy()))?;
             let arc = Arc::new((image, filename.into()));
             self.loaded.push(Arc::downgrade(&arc));
@@ -113,14 +160,36 @@ impl ImageDataCache {
     }
 }
 
-fn load_png<R: Read>(reader: BufReader<R>) -> Result<RgbaImage, Error> {
-    let decoder = png::Decoder::new(reader);
+fn load_png<R: Read>(reader: BufReader<R>, paletted: bool) -> Result<ImageData, Error> {
+    let mut decoder = png::Decoder::new(reader);
+    if paletted {
+        // Default transformations expand palette to RGB, remove that
+        decoder.set_transformations(png::Transformations::IDENTITY);
+    }
     let (info, mut reader) = decoder.read_info()?;
     let mut buf = vec![0; info.buffer_size()];
     reader.next_frame(&mut buf)?;
-    let rgba = arbitrary_png_to_rgba(buf, &info)?;
-    image::ImageBuffer::from_raw(info.width, info.height, rgba)
-        .ok_or_else(|| anyhow!("Couldn't create image from raw bytes"))
+    if paletted {
+        let info = reader.info();
+        let palette = match info.palette {
+            Some(ref s) => Arc::new(rgb_to_rgb0(s)),
+            None => return Err(anyhow!("Imported image must be paletted")),
+        };
+        Ok(ImageData::Paletted(buf, info.width, info.height, palette))
+    } else {
+        let rgba = arbitrary_png_to_rgba(buf, &info)?;
+        let image = image::ImageBuffer::from_raw(info.width, info.height, rgba)
+            .ok_or_else(|| anyhow!("Couldn't create image from raw bytes"))?;
+        Ok(ImageData::Image(image))
+    }
+}
+
+fn rgb_to_rgb0(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len() / 3 * 4);
+    for x in input.chunks_exact(3) {
+        out.extend_from_slice(&[x[0], x[1], x[2], 0]);
+    }
+    out
 }
 
 fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>, Error> {
@@ -177,11 +246,13 @@ impl<'a> FrameReader<'a> {
         dir: &'a Path,
         image_data_cache: &'a Mutex<ImageDataCache>,
         tls_cache: &'a mut TlsImageDataCache,
+        use_palette: bool,
     ) -> FrameReader<'a> {
         FrameReader {
             dir,
             image_data_cache,
             tls_cache,
+            use_palette,
         }
     }
 
@@ -191,7 +262,7 @@ impl<'a> FrameReader<'a> {
         layer: u32,
         frame: u32,
         frame_scale: f32,
-    ) -> Result<(Vec<u8>, u32, u32), Error> {
+    ) -> Result<(Vec<u8>, u32, u32, Option<Arc<Vec<u8>>>), Error> {
         let layer_prefix = frame_info.layers.iter()
             .find(|x| x.0 == layer)
             .map(|x| &x.1)
@@ -212,14 +283,14 @@ impl<'a> FrameReader<'a> {
                 // where 8 threads load a same 300MB PNG at once
                 // and 7 of them end up being discarded.
                 let mut main_cache = self.image_data_cache.lock().unwrap();
-                *self.tls_cache = main_cache.load_png(&filename)?;
+                *self.tls_cache = main_cache.load_png(&filename, self.use_palette)?;
                 self.tls_cache.get(&filename)
                     .ok_or_else(|| {
                         anyhow!("{} didn't load properly to cache???", filename.display())
                     })?
             }
         };
-        let frame_view = if let Some(multi_frame) = multi_frame_image {
+        let (x, y, width, height) = if let Some(multi_frame) = multi_frame_image {
             let index = frame - multi_frame.first_frame;
             let frames_per_row = image.width() / multi_frame.frame_width;
             if frames_per_row * multi_frame.frame_width != image.width() {
@@ -234,26 +305,55 @@ impl<'a> FrameReader<'a> {
                 Some(&s) => s,
                 None => (multi_frame.frame_width, multi_frame.frame_height),
             };
-            image.view(x, y, width, height)
+            (x, y, width, height)
         } else {
-            image.view(0, 0, image.width(), image.height())
-        }.to_image();
-
-        let buffer = if frame_scale != 1.0 {
-            let new_width = (frame_view.width() as f32 * frame_scale) as u32;
-            let new_height = (frame_view.height() as f32 * frame_scale) as u32;
-            image::imageops::resize(
-                &frame_view,
-                new_width,
-                new_height,
-                image::imageops::FilterType::Lanczos3,
-            )
-        } else {
-            frame_view
+            (0, 0, image.width(), image.height())
         };
-        let (width, height) = buffer.dimensions();
-        let data = buffer.into_raw();
-        Ok((data, width, height))
+
+        match *image {
+            ImageData::Paletted(ref data, in_width, _in_height, ref palette) => {
+                if frame_scale != 1.0 {
+                    return Err(anyhow!("Cannot scale when encoding paletted"));
+                }
+                let in_width = usize::try_from(in_width)?;
+                let width_usz = usize::try_from(width)?;
+                let height_usz = usize::try_from(height)?;
+                let size = width_usz.checked_mul(height_usz)
+                    .ok_or_else(|| anyhow!("Too large image"))?;
+                let mut buffer = Vec::with_capacity(size);
+                let x = usize::try_from(x)?;
+                let y = usize::try_from(y)?;
+                for y in (y..).take(height_usz) {
+                    let start = y.checked_mul(in_width)
+                        .and_then(|r| r.checked_add(x))
+                        .ok_or_else(|| anyhow!("Internal error {}:{}", file!(), line!()))?;
+                    let line = data.get(start..)
+                        .and_then(|x| x.get(..width_usz))
+                        .ok_or_else(|| anyhow!("Internal error {}:{}", file!(), line!()))?;
+                    buffer.extend_from_slice(line);
+                }
+                Ok((buffer, width, height, Some(palette.clone())))
+            }
+            ImageData::Image(ref image) => {
+                let frame_view = image.view(x, y, width, height).to_image();
+
+                let buffer = if frame_scale != 1.0 {
+                    let new_width = (frame_view.width() as f32 * frame_scale) as u32;
+                    let new_height = (frame_view.height() as f32 * frame_scale) as u32;
+                    image::imageops::resize(
+                        &frame_view,
+                        new_width,
+                        new_height,
+                        image::imageops::FilterType::Lanczos3,
+                    )
+                } else {
+                    frame_view
+                };
+                let (width, height) = buffer.dimensions();
+                let data = buffer.into_raw();
+                Ok((data, width, height, None))
+            }
+        }
     }
 }
 
@@ -296,9 +396,9 @@ pub fn import_frames<F: Fn(f32) + Sync>(
                     let tls_cache = tls.get_or(|| RefCell::new(TlsImageDataCache::default()));
                     let mut tls_cache = tls_cache.borrow_mut();
                     let mut frame_reader =
-                        FrameReader::new(dir, &image_data_cache, &mut tls_cache);
+                        FrameReader::new(dir, &image_data_cache, &mut tls_cache, false);
 
-                    let (data, width, height) =
+                    let (data, width, height, _palette) =
                         frame_reader.read_frame(frame_info, i, f, frame_scale)?;
                     let step = step.fetch_add(1, Ordering::Relaxed);
                     report_progress((step as f32) / step_count);

@@ -139,28 +139,66 @@ impl DdsGrp {
     }
 
     pub fn texture_formats(&self) -> Vec<Result<Option<anim::TextureFormat>, Error>> {
-        let mut read = self.read.lock().unwrap();
-        self.frames.iter().map(|f| {
-            read.seek(SeekFrom::Start(f.offset as u64))?;
-            let format = anim::texture_format(&mut *read, f.size)?;
-            Ok(Some(format))
-        }).collect()
+        if self.has_palette() {
+            vec![]
+        } else {
+            let mut read = self.read.lock().unwrap();
+            self.frames.iter().map(|f| {
+                read.seek(SeekFrom::Start(f.offset as u64))?;
+                let format = anim::texture_format(&mut *read, f.size)?;
+                Ok(Some(format))
+            }).collect()
+        }
     }
 
     pub fn write<W: Write + Seek>(
         mut out: W,
         scale: u8,
         frames: &[(Frame, Vec<u8>)],
+        palette: Option<&[u8]>,
     ) -> Result<(), Error> {
+        if let Some(palette) = palette {
+            if palette.len() != 0x400 {
+                return Err(Error(Box::new(anim::ErrKind::InvalidPalette)));
+            }
+            let first_frame = match frames.get(0) {
+                Some(s) => s,
+                None => return Err(Error(Box::new(anim::ErrKind::ImportNoFrames))),
+            };
+            let width = first_frame.0.width;
+            let height = first_frame.0.height;
+            let size = (width as usize) * (height as usize);
+            for (i, &(ref f, ref data)) in frames.iter().enumerate() {
+                if f.width != width || f.height != height || data.len() != size {
+                    return Err(Error(Box::new(anim::ErrKind::InvalidPalettedFrame(i as u32))));
+                }
+            }
+        };
+        let flags = if palette.is_some() {
+            scale | 0x10
+        } else {
+            scale
+        };
         out.write_u32::<LE>(0)?;
         out.write_u16::<LE>(frames.len() as u16)?;
-        out.write_u8(scale)?;
+        out.write_u8(flags)?;
         out.write_u8(0x10)?;
+        if let Some(palette) = palette {
+            let first_frame = match frames.get(0) {
+                Some(s) => s,
+                None => return Err(Error(Box::new(anim::ErrKind::ImportNoFrames))),
+            };
+            out.write_u16::<LE>(first_frame.0.width)?;
+            out.write_u16::<LE>(first_frame.0.height)?;
+            out.write_all(palette)?;
+        }
         for &(ref f, ref data) in frames {
-            out.write_u32::<LE>(f.unknown)?;
-            out.write_u16::<LE>(f.width)?;
-            out.write_u16::<LE>(f.height)?;
-            out.write_u32::<LE>(data.len() as u32)?;
+            if palette.is_none() {
+                out.write_u32::<LE>(f.unknown)?;
+                out.write_u16::<LE>(f.width)?;
+                out.write_u16::<LE>(f.height)?;
+                out.write_u32::<LE>(data.len() as u32)?;
+            }
             out.write_all(&data)?;
         }
         let file_size = out.seek(SeekFrom::Current(0))? as u32;

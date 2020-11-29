@@ -142,6 +142,15 @@ quick_error! {
         UnknownTextureFormat(magic: u32) {
             display("Unknown texture format, magic {:08x}", magic)
         }
+        InvalidPalette {
+            display("Palette must be 256 RGB0 entries")
+        }
+        ImportNoFrames {
+            display("Cannot import 0-frame image")
+        }
+        InvalidPalettedFrame(frame: u32) {
+            display("Frame {} does not have same size as the first frame", frame)
+        }
     }
 }
 

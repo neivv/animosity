@@ -35,6 +35,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let is_anim;
     let path;
     let grp_scale;
+    let had_palette;
     {
         let file = match files.file(tex_id.0, tex_id.1) {
             Ok(Some(o)) => o,
@@ -43,6 +44,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         is_anim = file.is_anim();
         layer_names = file.layer_names().into_owned();
         tex_formats = file.texture_formats();
+        had_palette = file.palette().is_some();
         path = file.path().to_owned();
         grp_scale = file.grp().map(|x| x.scale);
     }
@@ -122,10 +124,16 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
 
     let mut checkboxes = Vec::with_capacity(layer_names.len());
     let mut grp_format = None;
-    static FORMATS: &[(anim::TextureFormat, &str)] = &[
+    static FORMATS_ANIM: &[(anim::TextureFormat, &str)] = &[
         (anim::TextureFormat::Dxt1, "DXT1"),
         (anim::TextureFormat::Dxt5, "DXT5"),
         (anim::TextureFormat::Monochrome, "Monochrome"),
+    ];
+    static FORMATS_DDSGRP: &[(Option<anim::TextureFormat>, &str)] = &[
+        (Some(anim::TextureFormat::Dxt1), "DXT1"),
+        (Some(anim::TextureFormat::Dxt5), "DXT5"),
+        (Some(anim::TextureFormat::Monochrome), "Monochrome"),
+        (None, "Paletted"),
     ];
     let layers_bx = if is_anim {
         let grid = gtk::Grid::new();
@@ -142,22 +150,51 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             let label = gtk::Label::new(Some(&**name));
             grid.attach(&label, 1, row, 1, 1);
             label.set_halign(gtk::Align::Start);
-            let format = ComboBoxEnum::new(FORMATS);
+            let format = ComboBoxEnum::new(FORMATS_ANIM);
             grid.attach(format.widget(), 2, row, 1, 1);
 
             checkboxes.push((checkbox, format));
         }
         label_section("Layers", &grid)
     } else {
-        let format = ComboBoxEnum::new(FORMATS);
-        if let Some(Ok(Some(tex_f))) = tex_formats.get(0) {
-            format.set_active(tex_f);
+        let format = ComboBoxEnum::new(FORMATS_DDSGRP);
+        if had_palette {
+            format.set_active(&None);
+        } else {
+            if let Some(Ok(Some(tex_f))) = tex_formats.get(0) {
+                format.set_active(&Some(*tex_f));
+            }
         }
 
         let bx = label_section("Encode format", format.widget());
         grp_format = Some(format);
         bx
     };
+    layers_bx.set_tooltip_text(Some("\
+        Selects encoding format used for the graphics\n\
+        \n\
+        DXT1 is the most efficient format, using 4 bits per pixel.\n\
+        Its drawback is that it only supports 1-bit transparency \
+        (Each pixel is either fully transparent or fully opaque).\n\
+        It is probably best choice for almost every sprite.\n\
+        \n\
+        DXT5 supports full transparency at cost of using twice as much memory (8bpp).\n\
+        It should be used for explosions or similar effects which are partially see-through.\n\
+        It is slightly less lossy than DXT1 around areas that have transparent pixels,\n\
+        but the quality improvement is likely not noticeable.\n\
+        \n\
+        SC:R does not seem to have support for a lossless 32bpp RGBA file format that could \
+        be used for higher quality images at cost of memory usage.\n\
+        \n\
+        Monochrome is intended to be used with player color mask layers.\n\
+        It is lossless 8bpp format, and could take advantage of 256 values per pixel,\n\
+        but the default shaders assume that values are either 0 or 255,\n\
+        so Animosity will clip any input pixels to those values.
+        \n\
+        Paletted is another lossless 8bpp format, which is only (intented to be) \
+        used by SD tileset .dds.vr4 files.\n\
+        The imported image must have palette and every frame must be same size in order for \
+        it to be usable."));
     let grp_scale_entry;
     let grp_scale_bx;
     if is_anim {
