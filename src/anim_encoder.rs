@@ -505,10 +505,7 @@ fn encode_dxt5(
 
         tmp_buf.clear();
         tmp_buf.resize((width_aligned * height_aligned) as usize, 0);
-        let (in_data, in_width, in_height) = if place_x & 3 == 0 && place_y & 3 == 0 {
-            // Can just use frame data.
-            (&frame.data, frame_width, frame_height)
-        } else {
+        let (in_data, in_width, in_height) = {
             // Copy frame to a buffer that is 4-aligned as expected
             in_buf.clear();
             in_buf.resize(4 * (width_aligned * height_aligned) as usize, 0);
@@ -519,8 +516,16 @@ fn encode_dxt5(
                 let in_slice = &frame.data[in_pos..][..frame_width as usize * 4];
                 out_slice.copy_from_slice(in_slice);
             }
-            (&in_buf, width_aligned, height_aligned)
+            (&mut in_buf, width_aligned, height_aligned)
         };
+        // squish appears to have some bug with color encoding if red/blue values of
+        // a block are all equal. Add some variation to red by setting/clearing alternating
+        // least significant bits.
+        // (This makes a major difference in ao_depth importing since it's just green + alpha)
+        for pixel in in_data.chunks_exact_mut(8) {
+            pixel[0] |= 1;
+            pixel[4] &= !1;
+        }
         squish::Format::Bc3.compress(
             in_data,
             in_width as usize,
@@ -528,7 +533,7 @@ fn encode_dxt5(
             squish::Params {
                 algorithm: squish::Algorithm::IterativeClusterFit,
                 weights: squish::COLOUR_WEIGHTS_PERCEPTUAL,
-                weigh_colour_by_alpha: true,
+                weigh_colour_by_alpha: false,
             },
             &mut tmp_buf,
         );
