@@ -20,6 +20,7 @@ mod int_entry;
 mod files;
 mod recurse_checked_mutex;
 mod render;
+mod render_settings;
 mod select_dir;
 mod shaders;
 mod widget_lighting;
@@ -469,6 +470,7 @@ pub struct SpriteInfo {
     draw_clear_requests: RefCell<Vec<TextureId>>,
     lighting: Arc<widget_lighting::SpriteLighting>,
     lighting_expander: gtk::Expander,
+    render_settings: Rc<render_settings::RenderSettingsWidget>,
 }
 
 fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::SimpleAction> {
@@ -477,6 +479,8 @@ fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::S
 
 impl SpriteInfo {
     fn new(file_shared: &Arc<Mutex<files::Files>>) -> Arc<SpriteInfo> {
+        use crate::ui_helpers::*;
+
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let bx1 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let sprite_actions = gio::SimpleActionGroup::new();
@@ -533,9 +537,15 @@ impl SpriteInfo {
             expander_toggled(expander, false);
         });
         expander.add(&lighting.widget());
+        let render_settings = render_settings::RenderSettingsWidget::new();
+
+        let files_bx = box_horizontal(&[
+            &box_expand(&files),
+            render_settings.widget(),
+        ]);
 
         bx.pack_start(&sprite_bx, true, true, 0);
-        bx.pack_start(&files, false, false, 0);
+        bx.pack_start(&files_bx, false, false, 0);
         bx1.pack_start(&bx, true, true, 0);
         bx1.pack_start(&expander, false, false, 0);
         let result = Arc::new(SpriteInfo {
@@ -551,6 +561,7 @@ impl SpriteInfo {
             draw_clear_requests: RefCell::new(Vec::new()),
             lighting,
             lighting_expander: expander,
+            render_settings,
         });
         SpriteInfo::create_sprite_actions(&result, &result.sprite_actions.clone().upcast());
         values.connect_actions(&result.sprite_actions);
@@ -966,7 +977,26 @@ impl SpriteInfo {
             render_state.render_paletted(&texture, &palette)
                 .context("Failed to render paletted sprite")?;
         } else {
-            render_state.render_sprite(&texture)
+            use crate::render::SpriteMode;
+            use crate::render_settings::AoDepth;
+            let mode = match file.layer_names().get(tex_id.2 as usize) {
+                Some(x) if x == "normal" => {
+                    if self.render_settings.settings().decode_normal {
+                        SpriteMode::Normal
+                    } else {
+                        SpriteMode::Raw
+                    }
+                }
+                Some(x) if x == "ao_depth" => {
+                    match self.render_settings.settings().ao_depth_mode {
+                        AoDepth::Raw => SpriteMode::Raw,
+                        AoDepth::Ao => SpriteMode::Ao,
+                        AoDepth::Depth => SpriteMode::Depth,
+                    }
+                }
+                _ => SpriteMode::Raw,
+            };
+            render_state.render_sprite(&texture, mode)
                 .context("Failed to render sprite")?;
         }
         render_state.render_lines(tex_id, &texture, || {
@@ -1713,11 +1743,16 @@ fn create_ui(app: &gtk::Application) -> Ui {
 }
 
 fn label_section<O: IsA<gtk::Widget>>(name: &str, obj: &O) -> gtk::Box {
-    let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let label = gtk::Label::new(Some(name));
     label.set_halign(gtk::Align::Start);
-    bx.pack_start(&label, false, false, 0);
-    bx.pack_start(obj, false, false, 0);
+    let frame = gtk::Frame::new(Some(name));
+    obj.set_margin_top(obj.get_margin_top() + 2);
+    obj.set_margin_bottom(obj.get_margin_bottom() + 2);
+    obj.set_margin_start(obj.get_margin_start() + 2);
+    obj.set_margin_end(obj.get_margin_end() + 2);
+    frame.add(obj);
+    let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    bx.pack_start(&frame, false, false, 0);
     bx
 }
 

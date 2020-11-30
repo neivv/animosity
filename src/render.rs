@@ -20,6 +20,14 @@ pub struct RenderState {
     draw_params: DrawParams,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum SpriteMode {
+    Raw,
+    Ao,
+    Depth,
+    Normal,
+}
+
 impl RenderState {
     pub fn new(width: u32, height: u32) -> RenderState {
         let mut gl = gl::Context::new(width, height);
@@ -35,6 +43,21 @@ impl RenderState {
             &[0, 1, 2, 1, 3, 2],
         ).expect("Unable to create index buffer");
         let program = sprite_render_program(&mut gl);
+        let ao_program = Program::new(
+            gl.facade(),
+            &shaders::SPRITE_VERTEX,
+            &shaders::AO_FRAGMENT,
+        );
+        let depth_program = Program::new(
+            gl.facade(),
+            &shaders::SPRITE_VERTEX,
+            &shaders::DEPTH_FRAGMENT,
+        );
+        let normal_program = Program::new(
+            gl.facade(),
+            &shaders::SPRITE_VERTEX,
+            &shaders::NORMAL_FRAGMENT,
+        );
         let paletted_program = Program::new(
             gl.facade(),
             &shaders::PALETTED_VERTEX,
@@ -47,6 +70,9 @@ impl RenderState {
                 vertices,
                 indices,
                 program,
+                ao_program,
+                depth_program,
+                normal_program,
                 paletted_program,
                 cached_textures: Vec::new(),
                 cached_palette: None,
@@ -80,7 +106,7 @@ impl RenderState {
         buf.clear_color(0.0, 0.0, 0.0, 1.0);
     }
 
-    pub fn render_sprite(&mut self, texture: &Texture2d) -> Result<(), Error> {
+    pub fn render_sprite(&mut self, texture: &Texture2d, mode: SpriteMode) -> Result<(), Error> {
         let glium_params = glium::draw_parameters::DrawParameters {
             blend: glium::Blend::alpha_blending(),
             ..Default::default()
@@ -107,10 +133,16 @@ impl RenderState {
             transform: array4x4(tex_to_window),
             tex: sampler,
         };
+        let program = match mode {
+            SpriteMode::Raw => self.draw_params.program.program(facade),
+            SpriteMode::Ao => self.draw_params.ao_program.program(facade),
+            SpriteMode::Depth => self.draw_params.depth_program.program(facade),
+            SpriteMode::Normal => self.draw_params.normal_program.program(facade),
+        };
         buf.draw(
             &self.draw_params.vertices,
             &self.draw_params.indices,
-            self.draw_params.program.program(facade),
+            program,
             &uniforms,
             &glium_params,
         )?;
@@ -316,6 +348,9 @@ struct DrawParams {
     indices: IndexBuffer<u32>,
     lines: DrawLines,
     program: Program,
+    ao_program: Program,
+    depth_program: Program,
+    normal_program: Program,
     paletted_program: Program,
     cached_textures: Vec<(Rc<Texture2d>, TextureId)>,
     cached_palette: Option<Rc<Texture1d>>,
