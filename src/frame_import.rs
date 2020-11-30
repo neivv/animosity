@@ -357,6 +357,128 @@ impl<'a> FrameReader<'a> {
     }
 }
 
+fn alpha_used_for_data(name: &str) -> bool {
+    name == "normal" || name == "ao_depth"
+}
+
+struct LayerAddCtx<'a, F: Fn(f32) + Sync> {
+    // Will be updated as layers are added to be max w/h that a frame will use
+    // (For GRP creation)
+    image_width: u32,
+    image_height: u32,
+
+    // Used for determining of size alpha data layers since their bounds
+    // cannot be determined just by looking for alpha == 0.
+    // Technically could check for rgba == 0, but normal and depth have non-zero
+    // "neutral value". While exported images fill the out of bounds data with zeroes,
+    // the user may want to use paint bucket tool to just fill all of the canvas with the
+    // neutral color, so don't try to determine image bounds at all for those
+    // Collected as max coords of non-alpha data layers.
+    max_frame_bounds: Vec<Option<Bounds>>,
+
+    step: AtomicUsize,
+
+    // Immutable input params
+    step_count: f32,
+    frame_info: &'a FrameInfo,
+    layout: &'a mut anim_encoder::Layout,
+    first_layer: usize,
+    dir: &'a Path,
+    frame_scale: f32,
+    scale: u32,
+    report_progress: &'a F,
+}
+
+impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
+    fn add_layer(&mut self, i: u32, alpha_used_for_data: bool) -> Result<(), Error> {
+        let frame_info = self.frame_info;
+        let frame_scale = self.frame_scale;
+        let scale = self.scale;
+        let dir = self.dir;
+        let report_progress = self.report_progress;
+        let step = &self.step;
+        let step_count = self.step_count;
+
+        let image_data_cache = Mutex::new(ImageDataCache::default());
+        let tls = thread_local::ThreadLocal::new();
+        let layer = self.first_layer + i as usize;
+        let frames = (0..frame_info.frame_count).into_par_iter()
+            .map(|f| {
+                let tls_cache = tls.get_or(|| RefCell::new(TlsImageDataCache::default()));
+                let mut tls_cache = tls_cache.borrow_mut();
+                let mut frame_reader =
+                    FrameReader::new(dir, &image_data_cache, &mut tls_cache, false);
+
+                let (data, width, height, _palette) =
+                    frame_reader.read_frame(frame_info, i, f, frame_scale)?;
+                let step = step.fetch_add(1, Ordering::Relaxed);
+                report_progress((step as f32) / step_count);
+                Ok((f, data, width, height))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        for (f, data, width, height) in frames {
+            self.image_width = self.image_width.max(width);
+            self.image_height = self.image_height.max(height);
+            let bounds = if !alpha_used_for_data {
+                let bounds = rgba_bounds(&data, width, height);
+                if bounds.right > bounds.left && bounds.bottom > bounds.top {
+                    while self.max_frame_bounds.len() <= f as usize {
+                        self.max_frame_bounds.push(None);
+                    }
+                    let old = self.max_frame_bounds.get(f as usize)
+                        .cloned()
+                        .flatten()
+                        .unwrap_or_else(|| Bounds {
+                            left: u32::max_value(),
+                            top: u32::max_value(),
+                            right: 0,
+                            bottom: 0,
+                        });
+                    let new = Bounds {
+                        left: old.left.min(bounds.left),
+                        top: old.top.min(bounds.top),
+                        right: old.right.max(bounds.right),
+                        bottom: old.bottom.max(bounds.bottom),
+                    };
+                    self.max_frame_bounds[f as usize] = Some(new);
+                }
+                bounds
+            } else {
+                let mut bounds = self.max_frame_bounds.get(f as usize)
+                    .cloned()
+                    .flatten()
+                    .filter(|b| b.left < width && b.top < height)
+                    .unwrap_or_else(|| Bounds {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                    });
+                if bounds.right >= width {
+                    bounds.right = width;
+                }
+                if bounds.bottom >= height {
+                    bounds.bottom = height;
+                }
+                debug!("Bounds for layer {} - {} {} {} {}", i, bounds.left, bounds.top, bounds.right, bounds.bottom);
+                bounds
+            };
+
+            let mut bounded = bound_data(&data, width, height, &bounds);
+            let x_offset = (frame_info.offset_x as f32 * frame_scale) as i32;
+            let y_offset = (frame_info.offset_y as f32 * frame_scale) as i32;
+            bounded.coords.x_offset =
+                bounded.coords.x_offset.saturating_add(x_offset) * scale as i32;
+            bounded.coords.y_offset =
+                bounded.coords.y_offset.saturating_add(y_offset) * scale as i32;
+            bounded.coords.width *= scale;
+            bounded.coords.height *= scale;
+            self.layout.add_frame(layer, f as usize, bounded.data, bounded.coords);
+        }
+        Ok(())
+    }
+}
+
 pub fn import_frames<F: Fn(f32) + Sync>(
     files: &mut files::Files,
     frame_info: &FrameInfo,
@@ -366,6 +488,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
     frame_scale: f32,
     hd2_frame_scale: Option<f32>,
     formats: &[anim::TextureFormat],
+    layer_names: &[String],
     sprite: usize,
     ty: SpriteType,
     grp_path: Option<&Path>,
@@ -378,50 +501,46 @@ pub fn import_frames<F: Fn(f32) + Sync>(
         first_layer: usize,
         frame_scale: f32,
         scale: u32,
+        layer_names: &[String],
         report_progress: F,
     ) -> Result<(u32, u32), Error> {
-        let step = AtomicUsize::new(1);
-        let step_count = frame_info.layers.len() as f32 * frame_info.frame_count as f32;
-        let mut image_width = 0;
-        let mut image_height = 0;
         // Try to minimize amount of memory used by keeping PNGs loaded,
         // so never parallelize layers (as they are expected to always be
         // separate files)
+        let mut ctx = LayerAddCtx {
+            step: AtomicUsize::new(1),
+            step_count: frame_info.layers.len() as f32 * frame_info.frame_count as f32,
+            image_width: 0,
+            image_height: 0,
+            max_frame_bounds: Vec::with_capacity(frame_info.frame_count as usize),
+            layout,
+            frame_info,
+            first_layer,
+            dir,
+            frame_scale,
+            scale,
+            report_progress: &report_progress,
+        };
         for &(i, _) in &frame_info.layers {
-            let image_data_cache = Mutex::new(ImageDataCache::default());
-            let tls = thread_local::ThreadLocal::new();
-            let layer = first_layer + i as usize;
-            let frames = (0..frame_info.frame_count).into_par_iter()
-                .map(|f| {
-                    let tls_cache = tls.get_or(|| RefCell::new(TlsImageDataCache::default()));
-                    let mut tls_cache = tls_cache.borrow_mut();
-                    let mut frame_reader =
-                        FrameReader::new(dir, &image_data_cache, &mut tls_cache, false);
-
-                    let (data, width, height, _palette) =
-                        frame_reader.read_frame(frame_info, i, f, frame_scale)?;
-                    let step = step.fetch_add(1, Ordering::Relaxed);
-                    report_progress((step as f32) / step_count);
-                    Ok((f, data, width, height))
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            for (f, data, width, height) in frames {
-                image_width = image_width.max(width);
-                image_height = image_height.max(height);
-                let mut bounded = rgba_bounding_box(&data, width, height);
-
-                let x_offset = (frame_info.offset_x as f32 * frame_scale) as i32;
-                let y_offset = (frame_info.offset_y as f32 * frame_scale) as i32;
-                bounded.coords.x_offset =
-                    bounded.coords.x_offset.saturating_add(x_offset) * scale as i32;
-                bounded.coords.y_offset =
-                    bounded.coords.y_offset.saturating_add(y_offset) * scale as i32;
-                bounded.coords.width *= scale;
-                bounded.coords.height *= scale;
-                layout.add_frame(layer, f as usize, bounded.data, bounded.coords);
+            let alpha_used = layer_names.get(i as usize)
+                .map(|x| alpha_used_for_data(&x))
+                .unwrap_or(false);
+            if !alpha_used {
+                debug!("Non alpha layer {}", i);
+                ctx.add_layer(i, false)?;
             }
         }
-        Ok((image_width, image_height))
+        for &(i, _) in &frame_info.layers {
+            let alpha_used = layer_names.get(i as usize)
+                .map(|x| alpha_used_for_data(&x))
+                .unwrap_or(false);
+            if alpha_used {
+                debug!("Alpha layer {}", i);
+                ctx.add_layer(i, true)?;
+            }
+        }
+
+        Ok((ctx.image_width, ctx.image_height))
     }
 
     let hd2_frame_info = match (hd2_frame_info, hd2_dir) {
@@ -442,6 +561,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
         0,
         frame_scale,
         1,
+        layer_names,
         |step| report_progress(step * progress_mul),
     )?;
     if let Some((hd2, dir)) = hd2_frame_info {
@@ -452,6 +572,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
             layer_count,
             hd2_frame_scale.unwrap_or(1.0),
             2,
+            layer_names,
             |step| report_progress(0.5 + step * 0.5),
         )?;
     }
@@ -531,20 +652,17 @@ pub fn import_frames<F: Fn(f32) + Sync>(
     Ok(())
 }
 
-fn rgba_bounding_box(data: &[u8], width: u32, height: u32) -> Bounded {
+fn rgba_bounds(data: &[u8], width: u32, height: u32) -> Bounds {
     assert_eq!(data.len(), 4 * (width * height) as usize);
     let top = match data.chunks(width as usize * 4)
         .position(|x| !x.chunks(4).all(|x| x[3] == 0))
     {
         Some(s) => s as u32,
-        None => return Bounded {
-            data: vec![],
-            coords: anim_encoder::FrameCoords {
-                x_offset: 0,
-                y_offset: 0,
-                width: 0,
-                height: 0,
-            },
+        None => return Bounds {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
         },
     };
     let bottom = height - data.chunks(width as usize * 4).rev()
@@ -555,6 +673,21 @@ fn rgba_bounding_box(data: &[u8], width: u32, height: u32) -> Bounded {
     let right = 1 + (0..width).rev()
         .find(|x| !(top..bottom).all(|y| data[(y * width + x) as usize * 4 + 3] == 0))
         .unwrap();
+    Bounds {
+        top,
+        bottom,
+        left,
+        right,
+    }
+}
+
+fn bound_data(data: &[u8], width: u32, _height: u32, bounds: &Bounds) -> Bounded {
+    let Bounds {
+        left,
+        right,
+        top,
+        bottom,
+    } = *bounds;
     let out_width = right - left;
     let out_height = bottom - top;
     let mut out = vec![0; (out_width * out_height) as usize * 4];
@@ -575,6 +708,12 @@ fn rgba_bounding_box(data: &[u8], width: u32, height: u32) -> Bounded {
             height: out_height,
         },
     }
+}
+
+#[cfg(test)]
+fn rgba_bounding_box(data: &[u8], width: u32, height: u32) -> Bounded {
+    let bounds = rgba_bounds(data, width, height);
+    bound_data(data, width, height, &bounds)
 }
 
 #[test]
@@ -615,7 +754,26 @@ fn test_rgba_bounding_box() {
     }
 }
 
+#[test]
+fn test_empty_rgba_bounding_box() {
+    let data = vec![0; 40 * 70 * 4];
+    let result = rgba_bounding_box(&data, 40, 70);
+    assert_eq!(result.coords.x_offset, 0);
+    assert_eq!(result.coords.y_offset, 0);
+    assert_eq!(result.coords.width, 0);
+    assert_eq!(result.coords.height, 0);
+    assert_eq!(result.data.len(), 0);
+}
+
 struct Bounded {
     data: Vec<u8>,
     coords: anim_encoder::FrameCoords,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct Bounds {
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
 }

@@ -428,6 +428,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             } else {
                 None
             };
+            let layer_names = layer_names.clone();
             std::thread::spawn(move || {
                 let mut files = files_arc.lock();
                 let result = frame_import::import_frames(
@@ -439,6 +440,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     frame_scale,
                     hd2_scale,
                     &formats,
+                    &layer_names,
                     tex_id.0,
                     tex_id.1,
                     grp_filename.as_ref().map(|x| &**x),
