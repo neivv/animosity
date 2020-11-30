@@ -80,7 +80,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let mut hd2_framedef_bx = None;
     let hd2_framedef_status = gtk::Label::new(None);
     hd2_framedef_status.set_halign(gtk::Align::Start);
-    let hd2_scale = ScaleChooser::new("import_scale_hd2");
+    let hd2_scale = ScaleChooser::new(format!("import_scale_{}_hd2", sprite_type_str));
 
     let framedef_bx = if is_anim {
         framedef = Rc::new(

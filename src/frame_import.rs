@@ -460,7 +460,6 @@ impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
                 if bounds.bottom >= height {
                     bounds.bottom = height;
                 }
-                debug!("Bounds for layer {} - {} {} {} {}", i, bounds.left, bounds.top, bounds.right, bounds.bottom);
                 bounds
             };
 
@@ -526,7 +525,6 @@ pub fn import_frames<F: Fn(f32) + Sync>(
                 .map(|x| alpha_used_for_data(&x))
                 .unwrap_or(false);
             if !alpha_used {
-                debug!("Non alpha layer {}", i);
                 ctx.add_layer(i, false)?;
             }
         }
@@ -535,7 +533,6 @@ pub fn import_frames<F: Fn(f32) + Sync>(
                 .map(|x| alpha_used_for_data(&x))
                 .unwrap_or(false);
             if alpha_used {
-                debug!("Alpha layer {}", i);
                 ctx.add_layer(i, true)?;
             }
         }
