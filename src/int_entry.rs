@@ -12,6 +12,14 @@ pub struct IntEntry {
     disable_edit_events: AtomicUsize,
 }
 
+#[derive(Clone)]
+pub struct TextEntry(Arc<TextEntryInner>);
+
+struct TextEntryInner {
+    entry: gtk::Entry,
+    frame: gtk::Frame,
+}
+
 pub enum IntSize {
     Int8,
     Int16,
@@ -132,11 +140,33 @@ impl IntEntry {
         }
     }
 
-    pub fn widget(&self) -> gtk::Widget {
-        self.frame.clone().upcast()
+    pub fn widget(&self) -> &gtk::Widget {
+        self.frame.upcast_ref()
     }
 
     pub fn clear(&self) {
         self.entry.delete_text(0, -1);
+    }
+}
+
+impl TextEntry {
+    pub fn new() -> TextEntry {
+        let (entry, frame) = entry();
+        TextEntry(Arc::new(TextEntryInner {
+            entry,
+            frame,
+        }))
+    }
+
+    pub fn widget(&self) -> &gtk::Widget {
+        self.0.frame.upcast_ref()
+    }
+
+    pub fn get_text(&self) -> String {
+        self.0.entry.get_text().into()
+    }
+
+    pub fn set_text(&self, text: &str) {
+        self.0.entry.set_text(text)
     }
 }

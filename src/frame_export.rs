@@ -9,7 +9,25 @@ use anyhow::Context;
 use crate::anim::{Frame, RgbaTexture};
 use crate::files;
 use crate::frame_info::{self, FrameInfo, FrameType};
+use crate::normal_encoding;
 use crate::{SpriteType, Error};
+
+pub struct ExportLayer {
+    pub id: u32,
+    pub sub_id: u32,
+    pub prefix: String,
+    pub mode: LayerExportMode,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum LayerExportMode {
+    Rgba,
+    // Ao
+    Green,
+    // Depth
+    Alpha,
+    Normal,
+}
 
 // Won't export layers with None prefix,
 // framedef_file is joined to path, as are the image names
@@ -20,7 +38,7 @@ pub fn export_frames<F: Fn(f32)>(
     height: i32,
     path: &Path,
     framedef_file: &Path,
-    layer_prefixes: &[Option<String>],
+    layers: &[ExportLayer],
     single_image: bool,
     report_progress: F,
 ) -> Result<(), Error> {
@@ -34,8 +52,6 @@ pub fn export_frames<F: Fn(f32)>(
     };
 
     let frames = file.frames().ok_or_else(|| anyhow!("Unable to get frames"))?;
-    let enum_prefixes =
-        layer_prefixes.iter().enumerate().flat_map(|(i, x)| x.as_ref().map(|x| (i, x)));
     let x_base =
         frames.iter().map(|x| i32::from(x.x_off)).min().unwrap_or(0).min(0i32) / scale_div as i32;
     let y_base =
@@ -48,23 +64,28 @@ pub fn export_frames<F: Fn(f32)>(
     let frame_height = (y_max.max(height / scale_div as i32) - y_base) as u32;
     let mut multi_frame_images = Vec::new();
     let mut step = 1.0;
-    let layer_count = layer_prefixes.iter().filter(|x| x.is_some()).count();
-    let step_count = (layer_count * frames.len()) as f32;
-    for (i, prefix) in enum_prefixes {
-        let texture = file.texture(i)?;
+    let step_count = (layers.len() * frames.len()) as f32;
+    for layer in layers {
+        let texture = file.texture(layer.id as usize)?;
         if texture.is_paletted {
             return Err(anyhow!("Paletted textures are not supported"));
         }
-        let texture = RgbaTexture {
+        let mut texture = RgbaTexture {
             data: texture.data,
             width: texture.width,
             height: texture.height,
         };
+        match layer.mode {
+            LayerExportMode::Rgba => (),
+            LayerExportMode::Green => texture_make_single_channel(&mut texture, 1),
+            LayerExportMode::Alpha => texture_make_single_channel(&mut texture, 3),
+            LayerExportMode::Normal => texture_make_normal_decoded(&mut texture),
+        }
         if single_image {
             assert!(frames.len() > 0);
             let image_width = frame_width * frames.len().min(16) as u32;
             let image_height = frame_height * (1 + frames.len() / 16) as u32;
-            let path = &path.join(format!("{}.png", prefix));
+            let path = &path.join(format!("{}.png", layer.prefix));
             let out = File::create(path)
                 .with_context(|| format!("Unable to create {}", path.to_string_lossy()))?;
             let out = BufWriter::new(out);
@@ -96,7 +117,8 @@ pub fn export_frames<F: Fn(f32)>(
             multi_frame_images.push(frame_info::MultiFrameImage {
                 first_frame: 0,
                 frame_count: frames.len() as u32,
-                layer: i as u32,
+                layer: layer.id,
+                sublayer: layer.sub_id,
                 path: path.to_str().ok_or_else(|| anyhow!("Bad PNG path"))?.into(),
                 frame_width,
                 frame_height,
@@ -104,7 +126,7 @@ pub fn export_frames<F: Fn(f32)>(
             });
         } else {
             for (n, frame) in frames.iter().enumerate() {
-                let path = path.join(format!("{}_{:03}.png", prefix, n));
+                let path = path.join(format!("{}_{:03}.png", layer.prefix, n));
                 write_frame(
                     &path,
                     &texture,
@@ -127,9 +149,19 @@ pub fn export_frames<F: Fn(f32)>(
         frame_count: frames.len() as u32,
         offset_x: x_base,
         offset_y: y_base,
-        layers: layer_prefixes.iter().enumerate()
-            .filter_map(|(i, l)| l.as_ref().map(|x| (i, x)))
-            .map(|(i, prefix)| (i as u32, prefix.clone()))
+        layers: layers.iter()
+            .map(|layer| frame_info::Layer {
+                id: layer.id,
+                sub_id: layer.sub_id,
+                filename_prefix: layer.prefix.clone(),
+                encoding: match layer.mode {
+                    LayerExportMode::Rgba => frame_info::LayerEncoding::Raw,
+                    LayerExportMode::Green | LayerExportMode::Alpha => {
+                        frame_info::LayerEncoding::SingleChannel
+                    }
+                    LayerExportMode::Normal => frame_info::LayerEncoding::Normal,
+                },
+            })
             .collect(),
         frame_types: Vec::new(),
         multi_frame_images,
@@ -339,6 +371,7 @@ pub fn export_grp<F: Fn(f32)>(
             first_frame: 0,
             frame_count: layer_count as u32,
             layer: 0,
+            sublayer: 0,
             path: path.to_str().ok_or_else(|| anyhow!("Bad PNG path"))?.into(),
             frame_width,
             frame_height,
@@ -369,6 +402,7 @@ pub fn export_grp<F: Fn(f32)>(
                 first_frame: 0,
                 frame_count: 1,
                 layer: 0,
+                sublayer: 0,
                 path: path.to_str().ok_or_else(|| anyhow!("Bad PNG path"))?.into(),
                 frame_width: texture.width,
                 frame_height: texture.height,
@@ -385,7 +419,12 @@ pub fn export_grp<F: Fn(f32)>(
         frame_count: file.layer_count() as u32,
         offset_x: 0,
         offset_y: 0,
-        layers: vec![(0, prefix.into())],
+        layers: vec![frame_info::Layer {
+            id: 0,
+            sub_id: 0,
+            filename_prefix: prefix.into(),
+            encoding: frame_info::LayerEncoding::Raw,
+        }],
         frame_types: Vec::new(),
         multi_frame_images,
     };
@@ -399,4 +438,26 @@ fn rgba_to_rgb(input: &[u8]) -> Vec<u8> {
         .chunks_exact(4)
         .flat_map(|x| x.iter().copied().take(3))
         .collect()
+}
+
+fn texture_make_single_channel(texture: &mut RgbaTexture, channel: u8) {
+    let channel = channel as usize;
+    assert!(channel < 4);
+    for chunk in texture.data.chunks_mut(4) {
+        let val = chunk[channel];
+        chunk[0] = val;
+        chunk[1] = val;
+        chunk[2] = val;
+        chunk[3] = 255;
+    }
+}
+
+fn texture_make_normal_decoded(texture: &mut RgbaTexture) {
+    for chunk in texture.data.chunks_mut(4) {
+        let (x, y, z) = normal_encoding::decode_normal(chunk[0], chunk[3]);
+        chunk[0] = x;
+        chunk[1] = y;
+        chunk[2] = z;
+        chunk[3] = 255;
+    }
 }

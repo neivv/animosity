@@ -7,13 +7,22 @@ use anyhow::Context;
 use gtk;
 use gtk::prelude::*;
 
-use crate::frame_export;
-use crate::int_entry;
+use crate::frame_export::{self, LayerExportMode};
+use crate::int_entry::{self, TextEntry};
 use crate::select_dir;
 use crate::ui_helpers::*;
 use crate::{
     Error, error_from_panic, error_msg_box, info_msg_box, label_section, SpriteInfo, SpriteType,
 };
+
+struct LayerCheckboxState {
+    check: gtk::CheckButton,
+    label: gtk::Label,
+    entry: TextEntry,
+    layer: u32,
+    sublayer: u32,
+    export_mode: LayerExportMode,
+}
 
 pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
     enum Progress {
@@ -65,7 +74,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
         .and_then(|result| result.as_ref().ok())
         .map(|&x| x)
         .unwrap_or_else(|| (0, 0));
-    let mut checkboxes = Vec::with_capacity(layer_names.len());
+    let checkboxes = Rc::new(RefCell::new(Vec::with_capacity(layer_names.len())));
     let mut grp_prefix = None;
     let mut grp_prefix_text = String::new();
     let layers_bx = if is_anim {
@@ -76,35 +85,127 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
         let prefix_prefix = format!("{:03}_{}", tex_id.0, type_lowercase);
         prefix_label.set_halign(gtk::Align::Start);
         grid.attach(&prefix_label, 2, 0, 1, 1);
+        let mut row = 0;
         for (i, name) in layer_names.iter().enumerate() {
-            let row = i as i32 + 1;
+            row += 1;
             let tex_size = file.texture_size(i);
 
-            let checkbox = gtk::CheckButton::new();
-            grid.attach(&checkbox, 0, row, 1, 1);
-            let label = gtk::Label::new(Some(&**name));
-            grid.attach(&label, 1, row, 1, 1);
-            label.set_halign(gtk::Align::Start);
+            fn make_checkbox(
+                prefix_prefix: &str,
+                name: &str,
+                usable: bool,
+            ) -> (gtk::CheckButton, gtk::Label, TextEntry) {
+                let checkbox = gtk::CheckButton::new();
+                let label = gtk::Label::new(Some(name));
+                label.set_halign(gtk::Align::Start);
 
-            let (entry, frame) = int_entry::entry();
-            frame.set_hexpand(true);
+                let entry = TextEntry::new();
+                entry.widget().set_hexpand(true);
 
-            if tex_size.is_none() {
-                checkbox.set_sensitive(false);
-                label.set_sensitive(false);
-                entry.set_sensitive(false);
-                checkbox.set_active(false);
-            } else {
-                checkbox.set_active(true);
-                entry.set_text(&format!("{}_{}", prefix_prefix, name));
+                if usable {
+                    checkbox.set_active(true);
+                    entry.set_text(&format!("{}_{}", prefix_prefix, name));
+                } else {
+                    checkbox.set_sensitive(false);
+                    label.set_sensitive(false);
+                    entry.widget().set_sensitive(false);
+                    checkbox.set_active(false);
+                }
+
+                let e = entry.clone();
+                checkbox.connect_toggled(move |s| {
+                    e.widget().set_sensitive(s.get_active());
+                });
+
+                (checkbox, label, entry)
             }
-            let e = entry.clone();
-            checkbox.connect_toggled(move |s| {
-                e.set_sensitive(s.get_active());
-            });
+            let (checkbox, label, entry) =
+                make_checkbox(&prefix_prefix, &name, tex_size.is_some());
 
-            grid.attach(&frame, 2, row, 1, 1);
-            checkboxes.push((checkbox, entry));
+            grid.attach(&checkbox, 0, row, 1, 1);
+            grid.attach(&label, 1, row, 1, 1);
+            grid.attach(entry.widget(), 2, row, 1, 1);
+            let layer_id = i as u32;
+            checkboxes.borrow_mut().push(LayerCheckboxState {
+                check: checkbox,
+                entry,
+                label,
+                layer: layer_id,
+                sublayer: 0,
+                export_mode: LayerExportMode::Rgba,
+            });
+            if tex_size.is_some() {
+                if name == "normal" {
+                    row += 1;
+                    let check = SavedCheckbox::new_with_default(
+                        "export_decode_normal",
+                        "Decode normals",
+                        true,
+                    );
+                    check.widget().set_tooltip_text(Some("\
+                        Decodes the normal layer to X/Y/Z components.\n\
+                        See readme.txt for more information."));
+                    grid.attach(check.widget(), 1, row, 2, 1);
+                    let check2 = check.clone();
+                    let checkboxes2 = checkboxes.clone();
+                    check.connect_toggled(move || {
+                        checkboxes_update_normal(&checkboxes2, check2.get_active(), layer_id);
+                    });
+                    checkboxes_update_normal(&checkboxes, check.get_active(), layer_id);
+                } else if name == "ao_depth" {
+                    let (checkbox, label, entry) =
+                        make_checkbox(&prefix_prefix, "ao", true);
+                    row += 1;
+                    grid.attach(&checkbox, 0, row, 1, 1);
+                    grid.attach(&label, 1, row, 1, 1);
+                    grid.attach(entry.widget(), 2, row, 1, 1);
+                    checkboxes.borrow_mut().push(LayerCheckboxState {
+                        check: checkbox,
+                        entry,
+                        label,
+                        layer: layer_id,
+                        sublayer: 0,
+                        export_mode: LayerExportMode::Green,
+                    });
+
+                    let (checkbox, label, entry) =
+                        make_checkbox(&prefix_prefix, "depth", true);
+                    row += 1;
+                    grid.attach(&checkbox, 0, row, 1, 1);
+                    grid.attach(&label, 1, row, 1, 1);
+                    grid.attach(entry.widget(), 2, row, 1, 1);
+                    checkboxes.borrow_mut().push(LayerCheckboxState {
+                        check: checkbox,
+                        entry,
+                        label,
+                        layer: layer_id,
+                        sublayer: 1,
+                        export_mode: LayerExportMode::Alpha,
+                    });
+
+                    row += 1;
+                    let check = SavedCheckbox::new_with_default(
+                        "export_decode_ao_depth",
+                        "Split to AO + depth",
+                        true,
+                    );
+                    check.widget().set_tooltip_text(Some("\
+                        Splits ambient occlusion and depth data to separate files.\n\
+                        See readme.txt for more information."));
+                    grid.attach(check.widget(), 1, row, 2, 1);
+
+                    let check2 = check.clone();
+                    let checkboxes2 = checkboxes.clone();
+                    check.connect_toggled(move || {
+                        checkboxes_update_ao_depth(&checkboxes2, check2.get_active(), layer_id);
+                    });
+                    let check2 = check.clone();
+                    let checkboxes2 = checkboxes.clone();
+                    grid.connect_map(move |_| {
+                        checkboxes_update_ao_depth(&checkboxes2, check2.get_active(), layer_id);
+                    });
+                }
+            }
         }
         label_section("Layers to export", &grid)
     } else {
@@ -174,14 +275,23 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
         let frame_count;
         let path2 = path.clone();
         if is_anim {
-            let layers_to_export = checkboxes.iter().map(|(check, entry)| {
-                if check.get_active() {
-                    Some(entry.get_text().into())
-                } else {
-                    None
-                }
-            }).collect::<Vec<_>>();
-            frame_count = layers_to_export.iter().filter(|x| x.is_some()).count() *
+            let layers_to_export = checkboxes
+                .borrow()
+                .iter()
+                .filter_map(|layer| {
+                    if !layer.check.get_active() || !layer.check.is_visible() {
+                        return None;
+                    }
+                    let prefix = layer.entry.get_text();
+                    Some(frame_export::ExportLayer {
+                        prefix,
+                        id: layer.layer,
+                        sub_id: layer.sublayer,
+                        mode: layer.export_mode,
+                    })
+                })
+                .collect::<Vec<_>>();
+            frame_count = layers_to_export.len() *
                 file.frames().map(|x| x.len()).unwrap_or(0);
             let single_image = single_image_check2.get_active();
             std::thread::spawn(move || {
@@ -312,9 +422,17 @@ struct SavedCheckbox {
 
 impl SavedCheckbox {
     pub fn new<S: Into<String>>(save_entry: S, label: &str) -> SavedCheckbox {
+        SavedCheckbox::new_with_default(save_entry, label, false)
+    }
+
+    pub fn new_with_default<S: Into<String>>(
+        save_entry: S,
+        label: &str,
+        default: bool,
+    ) -> SavedCheckbox {
         let check = gtk::CheckButton::with_label(label);
         let save_entry = save_entry.into();
-        if select_dir::read_config_entry(&save_entry).map(|x| x == "y").unwrap_or(false) {
+        if select_dir::read_config_entry(&save_entry).map(|x| x == "y").unwrap_or(default) {
             check.set_active(true);
         } else {
             check.set_active(false);
@@ -337,5 +455,56 @@ impl SavedCheckbox {
 
     pub fn get_active(&self) -> bool {
         self.check.get_active()
+    }
+
+    pub fn connect_toggled<F: Fn() + 'static>(&self, func: F) {
+        self.check.connect_toggled(move |_| func());
+    }
+}
+
+fn checkboxes_update_normal(
+    checkboxes: &RefCell<Vec<LayerCheckboxState>>,
+    activate: bool,
+    layer_id: u32,
+) {
+    let mut checkboxes = match checkboxes.try_borrow_mut() {
+        Ok(o) => o,
+        _ => return,
+    };
+    for check in &mut *checkboxes {
+        if check.layer == layer_id {
+            if activate {
+                check.export_mode = LayerExportMode::Normal;
+            } else {
+                check.export_mode = LayerExportMode::Rgba;
+            }
+        }
+    }
+}
+
+fn checkboxes_update_ao_depth(
+    checkboxes: &RefCell<Vec<LayerCheckboxState>>,
+    activate_split: bool,
+    layer_id: u32,
+) {
+    // Note: Hidden checkboxes are treated as unchecked with ok button
+    fn set_visible(check: &LayerCheckboxState, visible: bool) {
+        check.check.set_visible(visible);
+        check.label.set_visible(visible);
+        check.entry.widget().set_visible(visible);
+    }
+
+    let checkboxes = match checkboxes.try_borrow() {
+        Ok(o) => o,
+        _ => return,
+    };
+    for check in &*checkboxes {
+        if check.layer == layer_id {
+            if activate_split {
+                set_visible(&check, check.export_mode != LayerExportMode::Rgba);
+            } else {
+                set_visible(&check, check.export_mode == LayerExportMode::Rgba);
+            }
+        }
     }
 }

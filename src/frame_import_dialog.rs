@@ -386,15 +386,15 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             let frame_info = if tex_id.1 == SpriteType::Sd {
                 let mut frame_info = frame_info;
                 let teamcolor_index = frame_info.layers.iter()
-                    .position(|x| x.0 > 1 && x.1.ends_with("teamcolor"))
+                    .position(|x| x.id > 1 && x.filename_prefix.ends_with("teamcolor"))
                     .filter(|&pos| pos > 1);
                 if let Some(index) = teamcolor_index {
                     frame_info.layers = vec![
                         frame_info.layers[0].clone(),
                         frame_info.layers[index].clone(),
                     ];
-                    frame_info.layers[0].0 = 0;
-                    frame_info.layers[1].0 = 1;
+                    frame_info.layers[0].id = 0;
+                    frame_info.layers[1].id = 1;
                     for mfi in &mut frame_info.multi_frame_images {
                         if mfi.layer == 1 {
                             mfi.layer = 2;
@@ -540,11 +540,11 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     format.set_sensitive(false);
                     format.clear_active();
                 }
-                for &(i, _) in &o.layers {
-                    if let Some(&(ref check, ref format)) = checkboxes.get(i as usize) {
+                for layer in &o.layers {
+                    if let Some(&(ref check, ref format)) = checkboxes.get(layer.id as usize) {
                         check.set_active(true);
                         format.set_sensitive(true);
-                        let tex_f = tex_formats.get(i as usize)
+                        let tex_f = tex_formats.get(layer.id as usize)
                             .and_then(|x| x.as_ref().ok())
                             .and_then(|x| x.as_ref());
                         if let Some(tex_f) = tex_f {

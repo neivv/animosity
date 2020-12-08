@@ -19,6 +19,7 @@ mod frame_info;
 mod gl;
 mod int_entry;
 mod files;
+mod normal_encoding;
 mod recurse_checked_mutex;
 mod render;
 mod render_settings;
@@ -286,14 +287,14 @@ impl SpriteValues {
         let height = IntEntry::new(IntSize::Int16);
         bx.set_sensitive(false);
         bx.pack_start(&ref_enable, false, false, 0);
-        bx.pack_start(&ref_index.widget(), false, false, 0);
+        bx.pack_start(ref_index.widget(), false, false, 0);
         bx.pack_start(&texture_dimensions, false, false, 0);
         bx.pack_start(&frame_count_label, false, false, 0);
         bx.pack_start(&unk2_label, false, false, 0);
-        bx.pack_start(&unk2.widget(), false, false, 0);
+        bx.pack_start(unk2.widget(), false, false, 0);
         bx.pack_start(&unk3_label, false, false, 0);
-        unk3_bx.pack_start(&width.widget(), true, true, 0);
-        unk3_bx.pack_start(&height.widget(), true, true, 0);
+        unk3_bx.pack_start(width.widget(), true, true, 0);
+        unk3_bx.pack_start(height.widget(), true, true, 0);
         bx.pack_start(&unk3_bx, false, false, 0);
         SpriteValues {
             bx,

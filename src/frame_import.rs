@@ -14,7 +14,8 @@ use crate::anim;
 use crate::anim_encoder;
 use crate::ddsgrp;
 use crate::files;
-use crate::frame_info::{FrameInfo};
+use crate::frame_info::{self, FrameInfo};
+use crate::normal_encoding;
 use crate::{SpriteType, Error};
 
 // If `format` isn't set it is assumed to be paletted, in which case the first image must
@@ -263,12 +264,53 @@ impl<'a> FrameReader<'a> {
         frame: u32,
         frame_scale: f32,
     ) -> Result<(Vec<u8>, u32, u32, Option<Arc<Vec<u8>>>), Error> {
-        let layer_prefix = frame_info.layers.iter()
-            .find(|x| x.0 == layer)
-            .map(|x| &x.1)
-            .ok_or_else(|| anyhow!("No layer {}", layer))?;
+        self.read_frame_sublayer(frame_info, layer, 0, frame, frame_scale)
+    }
+
+    fn read_ao_depth_merged_frame(
+        &mut self,
+        frame_info: &FrameInfo,
+        layer: u32,
+        frame: u32,
+        frame_scale: f32,
+    ) -> Result<(Vec<u8>, u32, u32, Option<Arc<Vec<u8>>>), Error> {
+        let (mut data, width, height, palette) =
+            self.read_frame_sublayer(frame_info, layer, 0, frame, frame_scale)
+                .context("Failed to read AO layer")?;
+        let (depth_data, depth_width, depth_height, depth_palette) =
+            self.read_frame_sublayer(frame_info, layer, 1, frame, frame_scale)
+                .context("Failed to read depth layer")?;
+        if palette.is_some() || depth_palette.is_some() {
+            return Err(anyhow!("Cannot merge ao_depth with paletted images"));
+        }
+        if width != depth_width || height != depth_height || data.len() != depth_data.len() {
+            return Err(anyhow!("Cannot merge ao_depth with images of different size"));
+        }
+        for (ao_pixel, depth_pixel) in data.chunks_exact_mut(4).zip(depth_data.chunks_exact(4)) {
+            let ao = ao_pixel[0];
+            let depth = depth_pixel[0];
+            ao_pixel[0] = 0;
+            ao_pixel[1] = ao;
+            ao_pixel[2] = 0;
+            ao_pixel[3] = depth;
+        }
+        Ok((data, width, height, palette))
+    }
+
+    fn read_frame_sublayer(
+        &mut self,
+        frame_info: &FrameInfo,
+        layer_id: u32,
+        sublayer: u32,
+        frame: u32,
+        frame_scale: f32,
+    ) -> Result<(Vec<u8>, u32, u32, Option<Arc<Vec<u8>>>), Error> {
+        let layer = frame_info.layers.iter()
+            .find(|x| x.id == layer_id && x.sub_id == sublayer)
+            .ok_or_else(|| anyhow!("No layer {}:{}", layer_id, sublayer))?;
+        let layer_prefix = &layer.filename_prefix;
         let multi_frame_image = frame_info.multi_frame_images.iter()
-            .filter(|x| x.layer == layer)
+            .filter(|x| x.layer == layer_id && x.sublayer == sublayer)
             .find(|x| frame >= x.first_frame && frame < x.first_frame + x.frame_count);
         let filename = if let Some(multi_frame) = multi_frame_image {
             (&multi_frame.path).into()
@@ -350,15 +392,24 @@ impl<'a> FrameReader<'a> {
                     frame_view
                 };
                 let (width, height) = buffer.dimensions();
-                let data = buffer.into_raw();
+                let mut data = buffer.into_raw();
+                if layer.encoding == frame_info::LayerEncoding::Normal {
+                    for pixel in data.chunks_exact_mut(4) {
+                        let (x, y) = normal_encoding::encode_normal(pixel[0], pixel[1], pixel[2]);
+                        pixel[0] = x;
+                        pixel[1] = 0;
+                        pixel[2] = 0;
+                        pixel[3] = y;
+                    }
+                }
                 Ok((data, width, height, None))
             }
         }
     }
 }
 
-fn alpha_used_for_data(name: &str) -> bool {
-    name == "normal" || name == "ao_depth"
+fn layer_has_alpha_bounding_box(name: &str) -> bool {
+    name == "diffuse" || name == "bright"
 }
 
 struct LayerAddCtx<'a, F: Fn(f32) + Sync> {
@@ -390,7 +441,12 @@ struct LayerAddCtx<'a, F: Fn(f32) + Sync> {
 }
 
 impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
-    fn add_layer(&mut self, i: u32, alpha_used_for_data: bool) -> Result<(), Error> {
+    fn add_layer(
+        &mut self,
+        i: u32,
+        alpha_bounding_box: bool,
+        merge_ao_depth: bool,
+    ) -> Result<(), Error> {
         let frame_info = self.frame_info;
         let frame_scale = self.frame_scale;
         let scale = self.scale;
@@ -409,8 +465,11 @@ impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
                 let mut frame_reader =
                     FrameReader::new(dir, &image_data_cache, &mut tls_cache, false);
 
-                let (data, width, height, _palette) =
-                    frame_reader.read_frame(frame_info, i, f, frame_scale)?;
+                let (data, width, height, _palette) = if merge_ao_depth {
+                    frame_reader.read_ao_depth_merged_frame(frame_info, i, f, frame_scale)
+                } else {
+                    frame_reader.read_frame(frame_info, i, f, frame_scale)
+                }.with_context(|| format!("Reading frame #{}", f))?;
                 let step = step.fetch_add(1, Ordering::Relaxed);
                 report_progress((step as f32) / step_count);
                 Ok((f, data, width, height))
@@ -419,7 +478,7 @@ impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
         for (f, data, width, height) in frames {
             self.image_width = self.image_width.max(width);
             self.image_height = self.image_height.max(height);
-            let bounds = if !alpha_used_for_data {
+            let bounds = if alpha_bounding_box {
                 let bounds = rgba_bounds(&data, width, height);
                 if bounds.right > bounds.left && bounds.bottom > bounds.top {
                     while self.max_frame_bounds.len() <= f as usize {
@@ -520,20 +579,33 @@ pub fn import_frames<F: Fn(f32) + Sync>(
             scale,
             report_progress: &report_progress,
         };
-        for &(i, _) in &frame_info.layers {
-            let alpha_used = layer_names.get(i as usize)
-                .map(|x| alpha_used_for_data(&x))
+        fn is_merge_ao_depth(
+            layer_names: &[String],
+            layer: &frame_info::Layer,
+        ) -> bool {
+            let name_ok = layer_names
+                .get(layer.id as usize)
+                .filter(|&x| x == "ao_depth")
+                .is_some();
+            name_ok && layer.encoding == frame_info::LayerEncoding::SingleChannel
+        }
+
+        for layer in &frame_info.layers {
+            let alpha_used = layer_names.get(layer.id as usize)
+                .map(|x| layer_has_alpha_bounding_box(&x))
                 .unwrap_or(false);
-            if !alpha_used {
-                ctx.add_layer(i, false)?;
+            if layer.sub_id == 0 && alpha_used {
+                let merge_ao_depth = is_merge_ao_depth(layer_names, layer);
+                ctx.add_layer(layer.id, true, merge_ao_depth)?;
             }
         }
-        for &(i, _) in &frame_info.layers {
-            let alpha_used = layer_names.get(i as usize)
-                .map(|x| alpha_used_for_data(&x))
+        for layer in &frame_info.layers {
+            let alpha_used = layer_names.get(layer.id as usize)
+                .map(|x| layer_has_alpha_bounding_box(&x))
                 .unwrap_or(false);
-            if alpha_used {
-                ctx.add_layer(i, true)?;
+            if layer.sub_id == 0 && !alpha_used {
+                let merge_ao_depth = is_merge_ao_depth(layer_names, layer);
+                ctx.add_layer(layer.id, false, merge_ao_depth)?;
             }
         }
 
@@ -589,7 +661,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
     let layout_result = layout.layout();
 
     let formats = formats.iter().enumerate().map(|(i, &f)| {
-        if frame_info.layers.iter().any(|x| x.0 as usize == i) {
+        if frame_info.layers.iter().any(|x| x.id as usize == i) {
             Some(f)
         } else {
             None
