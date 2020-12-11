@@ -649,14 +649,15 @@ pub fn import_frames<F: Fn(f32) + Sync>(
         if let Some(parent) = grp_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut file = std::fs::File::create(grp_path)
-            .with_context(|| format!("Couldn't create {}", grp_path.display()))?;
         let width = u16::try_from(width)
             .context("Sprite dimensions too large")?;
         let height = u16::try_from(height)
             .context("Sprite dimensions too large")?;
-        layout.write_grp(&mut file, width, height)
+        let mut grp = Vec::new();
+        layout.write_grp(&mut std::io::Cursor::new(&mut grp), width, height)
             .context("Couldn't write GRP")?;
+        std::fs::write(grp_path, &grp)
+            .with_context(|| format!("Couldn't write {}", grp_path.display()))?;
     }
     let layout_result = layout.layout();
 

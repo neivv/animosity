@@ -263,10 +263,18 @@ impl Layout {
         out.write_u16::<LE>(u16::try_from(frames.len()).context("Too many frames")?)?;
         out.write_u16::<LE>(width)?;
         out.write_u16::<LE>(height)?;
-        for frame in frames.iter() {
+        for (frame_n, frame) in frames.iter().enumerate() {
             if let Some((frame, x, y)) = frame {
-                out.write_u8(u8::try_from(*x).context("Bad frame x")?)?;
-                out.write_u8(u8::try_from(*y).context("Bad frame y")?)?;
+                let x = u8::try_from(*x)
+                    .with_context(|| {
+                        format!("Frame {} X coordinate {} cannot be used", frame_n, *x)
+                    })?;
+                let y = u8::try_from(*y)
+                    .with_context(|| {
+                        format!("Frame {} Y coordinate {} cannot be used", frame_n, *y)
+                    })?;
+                out.write_u8(x)?;
+                out.write_u8(y)?;
                 out.write_u8(u8::try_from(frame.width).context("Bad frame width")?)?;
                 out.write_u8(u8::try_from(frame.height).context("Bad frame height")?)?;
             } else {
