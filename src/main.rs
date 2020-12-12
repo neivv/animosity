@@ -17,6 +17,8 @@ mod frame_import;
 mod frame_import_dialog;
 mod frame_info;
 mod gl;
+mod grp_decode;
+mod grp_import_dialog;
 mod int_entry;
 mod files;
 mod normal_encoding;
@@ -1136,6 +1138,7 @@ fn create_menu() -> gio::Menu {
         let import_actions = {
             let menu = gio::Menu::new();
             menu.append_item(&with_accel("_Import frames...", "app.importFrames", "<Ctrl>I"));
+            menu.append_item(&with_accel("Import _GRP...", "app.importGrp", "<Ctrl>G"));
             menu
         };
         menu.append_section(None, &import_actions);
@@ -1258,6 +1261,10 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
         let ui = ui();
         frame_import_dialog::frame_import_dialog(&ui.info, &ui.main_window);
     });
+    action(app, "importGrp", false, move |_, _| {
+        let ui = ui();
+        grp_import_dialog::grp_import_dialog(&ui.info, &ui.main_window);
+    });
     if cfg!(debug_assertions) {
         action(app, "debug_write", true, move |_, _| {
             println!("Write test finished");
@@ -1316,6 +1323,9 @@ fn enable_file_actions(app: &gtk::Application) {
     if let Some(a) = lookup_action(app, "importFrames") {
         a.set_enabled(true);
     }
+    if let Some(a) = lookup_action(app, "importGrp") {
+        a.set_enabled(true);
+    }
     if let Some(a) = lookup_action(app, "exportFrames") {
         a.set_enabled(true);
     }
@@ -1326,6 +1336,7 @@ fn open(filename: &Path) {
     match files::Files::init(filename) {
         Ok((f, index)) => {
             ui.files_changed(&f);
+            enable_file_actions(&ui.app);
             {
                 STATE.with(|x| {
                     let state = x.borrow();
@@ -1338,7 +1349,6 @@ fn open(filename: &Path) {
             let index = index.unwrap_or(0);
             ui.info.select_sprite(index);
             ui.list.list.select(index);
-            enable_file_actions(&ui.app);
         }
         Err(e) => {
             let msg = format!("Unable to open file: {:?}", e);

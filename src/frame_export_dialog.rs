@@ -416,7 +416,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
 }
 
 #[derive(Clone)]
-struct SavedCheckbox {
+pub struct SavedCheckbox {
     check: gtk::CheckButton,
 }
 

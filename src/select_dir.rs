@@ -162,8 +162,8 @@ impl SelectFile {
         }
     }
 
-    pub fn widget(&self) -> gtk::Widget {
-        self.bx.clone().upcast()
+    pub fn widget(&self) -> &gtk::Widget {
+        self.bx.upcast_ref()
     }
 
     pub fn text(&self) -> String {

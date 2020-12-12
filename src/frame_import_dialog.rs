@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gio::prelude::*;
 use gtk::prelude::*;
-use serde_derive::{Serialize, Deserialize};
+use serde_derive::{Deserialize, Serialize};
 
 use crate::anim;
 use crate::combo_box_enum::ComboBoxEnum;
@@ -88,7 +88,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         );
         framedef_scale = ScaleChooser::new(format!("import_scale_{}", sprite_type_str));
         let framedef_inner_bx = box_vertical(&[
-            &framedef.widget(),
+            framedef.widget(),
             framedef_scale.widget(),
             &framedef_status,
         ]);
@@ -97,7 +97,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 &window, "import_frames_hd2", "Text files", "*.json"
             ));
             let bx = box_vertical(&[
-                &hd2_framedef_.widget(),
+                hd2_framedef_.widget(),
                 hd2_scale.widget(),
                 &hd2_framedef_status,
             ]);
@@ -114,7 +114,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         );
         framedef_scale = ScaleChooser::new(format!("import_scale_grp_{}", sprite_type_str));
         let inner_bx = box_vertical(&[
-            &framedef.widget(),
+            framedef.widget(),
             framedef_scale.widget(),
             &framedef_status,
         ]);
@@ -170,31 +170,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         grp_format = Some(format);
         bx
     };
-    layers_bx.set_tooltip_text(Some("\
-        Selects encoding format used for the graphics\n\
-        \n\
-        DXT1 is the most efficient format, using 4 bits per pixel.\n\
-        Its drawback is that it only supports 1-bit transparency \
-        (Each pixel is either fully transparent or fully opaque).\n\
-        It is probably best choice for almost every sprite.\n\
-        \n\
-        DXT5 supports full transparency at cost of using twice as much memory (8bpp).\n\
-        It should be used for explosions or similar effects which are partially see-through.\n\
-        It is slightly less lossy than DXT1 around areas that have transparent pixels,\n\
-        but the quality improvement is likely not noticeable.\n\
-        \n\
-        SC:R does not seem to have support for a lossless 32bpp RGBA file format that could \
-        be used for higher quality images at cost of memory usage.\n\
-        \n\
-        Monochrome is intended to be used with player color mask layers.\n\
-        It is lossless 8bpp format, and could take advantage of 256 values per pixel,\n\
-        but the default shaders assume that values are either 0 or 255,\n\
-        so Animosity will clip any input pixels to those values.
-        \n\
-        Paletted is another lossless 8bpp format, which is only (intented to be) \
-        used by SD tileset .dds.vr4 files.\n\
-        The imported image must have palette and every frame must be same size in order for \
-        it to be usable."));
+    layers_bx.set_tooltip_text(Some(encoding_tooltip_text()));
     let grp_scale_entry;
     let grp_scale_bx;
     if is_anim {
@@ -631,7 +607,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     window.show_all();
 }
 
-#[derive(Eq, PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Deserialize, Serialize)]
 enum ScaleValue {
     Scale1,
     Scale050,
@@ -704,4 +680,33 @@ impl ScaleChooser {
     fn get_active(&self) -> Option<ScaleValue> {
         self.combo_box.get_active()
     }
+}
+
+pub fn encoding_tooltip_text() -> &'static str {
+    "\
+    Selects encoding format used for the graphics\n\
+    \n\
+    DXT1 is the most efficient format, using 4 bits per pixel.\n\
+    Its drawback is that it only supports 1-bit transparency \
+    (Each pixel is either fully transparent or fully opaque).\n\
+    It is probably best choice unless you need partial transparency for explosion effects or \
+    to reduce aliasing.\n\
+    \n\
+    DXT5 supports full transparency at cost of using twice as much memory (8bpp).\n\
+    It should be used for explosions or similar effects which are partially see-through.\n\
+    It is slightly less lossy than DXT1 around areas that have transparent pixels,\n\
+    but the quality improvement is likely not noticeable.\n\
+    \n\
+    SC:R does not seem to have support for a lossless 32bpp RGBA file format that could \
+    be used for higher quality images at cost of memory usage.\n\
+    \n\
+    Monochrome is intended to be used with player color mask layers.\n\
+    It is lossless 8bpp format, and could take advantage of 256 values per pixel,\n\
+    but the default shaders assume that values are either 0 or 255,\n\
+    so Animosity will clip any input pixels to those values.
+    \n\
+    Paletted is another lossless 8bpp format, which is only (intented to be) \
+    used by SD tileset .dds.vr4 files.\n\
+    The imported image must have palette and every frame must be same size in order for \
+    it to be usable."
 }

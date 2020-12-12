@@ -15,6 +15,7 @@ use crate::anim_encoder;
 use crate::ddsgrp;
 use crate::files;
 use crate::frame_info::{self, FrameInfo};
+use crate::grp_decode;
 use crate::normal_encoding;
 use crate::{SpriteType, Error};
 
@@ -720,6 +721,195 @@ pub fn import_frames<F: Fn(f32) + Sync>(
     }
 
     Ok(())
+}
+
+pub fn import_grp_to_anim<F: Fn(f32) + Sync>(
+    files: &mut files::Files,
+    sprite: usize,
+    grp: &[u8],
+    palette: &[u8],
+    format: anim::TextureFormat,
+    use_teamcolor: bool,
+    report_progress: F,
+) -> Result<(), Error> {
+    let variants = [
+        (SpriteType::Sd, 1),
+        (SpriteType::Hd2, 2),
+        (SpriteType::Hd, 4),
+    ];
+
+    let frame_count = grp_decode::frame_count(grp)?;
+    let mut layout = anim_encoder::Layout::new();
+    let formats = [
+        Some(format),
+        Some(anim::TextureFormat::Monochrome).filter(|_| use_teamcolor),
+    ];
+    let step = AtomicUsize::new(1);
+    let frames = (0..frame_count).into_par_iter()
+        .map(|frame| {
+            let (frame_data, teamcolor) = if use_teamcolor {
+                let (frame_data, teamcolor) =
+                    grp_decode::decode_grp_to_rgba_and_teamcolor(grp, frame, palette)
+                        .with_context(|| format!("Invalid GRP, cannot decode frame {}", frame))?;
+                (frame_data, Some(teamcolor))
+            } else {
+                let frame_data = grp_decode::decode_grp_to_rgba(grp, frame, palette)
+                    .with_context(|| format!("Invalid GRP, cannot decode frame {}", frame))?;
+                (frame_data, None)
+            };
+
+            let mut entries = Vec::new();
+            for (i, &(_sprite_type, scale)) in variants.iter().enumerate() {
+                let reverse_scale = 4 / scale;
+                let data =
+                    scale_rgba(&frame_data.data, frame_data.width, frame_data.height, scale);
+                let width = frame_data.width * scale;
+                let height = frame_data.height * scale;
+                let bounds = rgba_bounds(&data, width, height);
+                let mut bounded = bound_data(&data, width, height, &bounds);
+                bounded.coords.x_offset *= reverse_scale as i32;
+                bounded.coords.y_offset *= reverse_scale as i32;
+                bounded.coords.width *= reverse_scale;
+                bounded.coords.height *= reverse_scale;
+                let layer = i * 2;
+                entries.push((layer, frame as usize, bounded.data, bounded.coords));
+                if let Some(ref teamcolor) = teamcolor {
+                    let data = scale_rgba(&teamcolor, frame_data.width, frame_data.height, scale);
+                    let mut bounded = bound_data(&data, width, height, &bounds);
+                    bounded.coords.x_offset *= reverse_scale as i32;
+                    bounded.coords.y_offset *= reverse_scale as i32;
+                    bounded.coords.width *= reverse_scale;
+                    bounded.coords.height *= reverse_scale;
+                    entries.push((layer + 1, frame as usize, bounded.data, bounded.coords));
+                }
+            }
+            let step = step.fetch_add(1, Ordering::Relaxed);
+            report_progress(step as f32 / frame_count as f32);
+            Ok(entries)
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    for (layer, frame, data, coords) in frames.into_iter().flatten() {
+        layout.add_frame(layer, frame, data, coords);
+    }
+    let layout_result = layout.layout();
+    for (i, &(sprite_type, scale)) in variants.iter().enumerate() {
+        let reverse_scale = 4 / scale;
+        let mut changes = layout_result.encode(i * 2, &formats, reverse_scale);
+        if sprite_type == SpriteType::Sd {
+            for f in &mut changes.frames {
+                f.tex_x /= 4;
+                f.tex_y /= 4;
+                f.x_off /= 4;
+                f.y_off /= 4;
+                f.width /= 4;
+                f.height /= 4;
+            }
+        }
+        // Frame type to 0
+        for f in 0..frame_count {
+            if let Some(f) = changes.frames.get_mut(f as usize) {
+                f.unknown = 0;
+            }
+        }
+        // Fix tex change layers from diffuse/teamcolor to match
+        // layer_names
+        let ordered_textures = {
+            let file = files.file(sprite, sprite_type)
+                .ok()
+                .flatten()
+                .ok_or_else(|| anyhow!("Can't access Sprite {}/{:?}", sprite, sprite_type))?;
+            let layer_names = file.layer_names();
+            layer_names.iter().map(|name| {
+                if name == "diffuse" {
+                    changes.textures[0].take()
+                } else if name == "teamcolor" {
+                    changes.textures[1].take()
+                } else {
+                    None
+                }
+            }).collect()
+        };
+        changes.textures = ordered_textures;
+        files.set_tex_changes(sprite, sprite_type, changes);
+    }
+
+    // Resize lit frames if lit exists
+    if let Some(lit) = files.lit() {
+        if let Some(sprite) = lit.sprite_mut(sprite) {
+            sprite.set_frame_count(u32::from(frame_count));
+        }
+    }
+
+    Ok(())
+}
+
+/// Uses format: None for paletted
+pub fn import_grp_to_ddsgrp<F: Fn(f32) + Sync>(
+    files: &mut files::Files,
+    sprite: usize,
+    grp: &[u8],
+    palette: &[u8],
+    format: Option<anim::TextureFormat>,
+    scale: u8,
+    report_progress: F,
+) -> Result<(), Error> {
+    if palette.len() != 0x400 {
+        return Err(anyhow!("Invalid palette"));
+    }
+    let frame_count = grp_decode::frame_count(grp)?;
+
+    let frames = (0..frame_count).map(|frame| {
+        let (data, width, height) = if let Some(format) = format {
+            let result = grp_decode::decode_grp_to_rgba(grp, frame, palette)
+                .with_context(|| format!("Invalid GRP, cannot decode frame {}", frame))?;
+            let width = result.width;
+            let height = result.height;
+            let data = anim_encoder::encode(&result.data, width, height, format);
+            (data, width, height)
+        } else {
+            let result = grp_decode::decode_grp_to_paletted(grp, frame)
+                .with_context(|| format!("Invalid GRP, cannot decode frame {}", frame))?;
+            (result.data, result.width, result.height)
+        };
+        report_progress(frame as f32 / frame_count as f32);
+        let frame = ddsgrp::Frame {
+            unknown: 0,
+            width: u16::try_from(width)
+                .map_err(|_| anyhow!("Frame {} width too large", frame))?,
+            height: u16::try_from(height)
+                .map_err(|_| anyhow!("Frame {} width too large", frame))?,
+            size: data.len() as u32,
+            offset: !0,
+        };
+        Ok((frame, data))
+    }).collect::<Result<Vec<_>, Error>>()?;
+
+    let palette = if format.is_none() {
+        Some(palette.into())
+    } else {
+        None
+    };
+    files.set_grp_changes(sprite, frames, scale, palette);
+
+    Ok(())
+}
+
+fn scale_rgba(input: &[u8], width: u32, height: u32, scale: u32) -> Vec<u8> {
+    let vec = input.into();
+    if scale == 1 {
+        return vec;
+    }
+    let image = match image::RgbaImage::from_raw(width, height, vec) {
+        Some(s) => s,
+        None => panic!("Cannot create image::ImageBuffer"),
+    };
+    let result = image::imageops::resize(
+        &image,
+        width * scale,
+        height * scale,
+        image::imageops::FilterType::Lanczos3,
+    );
+    result.into_raw()
 }
 
 fn rgba_bounds(data: &[u8], width: u32, height: u32) -> Bounds {
