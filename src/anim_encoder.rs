@@ -362,7 +362,7 @@ fn layout_frames(
     while let Some((uses, frame)) = frames.pop() {
         let mask = alignment - 1;
         let round_to_alignment = |x: u32| {
-            ((x - 1) | mask) + 1
+            ((x.wrapping_sub(1)) | mask).wrapping_add(1)
         };
         let width = round_to_alignment(frame.width);
         let height = round_to_alignment(frame.height);
@@ -468,6 +468,7 @@ fn encode_monochrome(
         if frame.data.is_empty() {
             continue;
         }
+        // + 4 for BMP_MAGIC
         let mut out_pos = (
             (place.y + offset.1 as u32) / scale * width + (place.x + offset.0 as u32) / scale
         ) as usize + 4;
