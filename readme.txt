@@ -46,21 +46,23 @@ Anim inter-file requirements:
 1) HD and HD2 anim must contain same graphics, HD2 being scaled to 50% of width/height 
     (25% pixels) of HD. All layers should match and contain same frames at same positions
     on the texture atlas.
-2) Sprite's main dimensions in HD2 are expected to be same as in HD (In HD they match
-    pixels, HD2 they are 2x pixel values)
-3) SD sprite dimensions are not stored in mainSD.anim (They are 0/0 there), but in the .grp
-    file specified in images.dat.
-4) The .grp files are used also to determine which pixels of a sprite are clickable.
+2) The main "Dimensions" values don't actually seem to be used?
+    In HD they match what you would expect a frame dimension to be, HD2 uses same value as HD,
+    and SD doesn't have them set at all.
+    SD is confirmed to use dimensions from the .grp specified in images.dat / images.tbl for
+    centering frames, and it seems that HD/HD2 also end up using the GRP values, but scaled
+    2x / 4x.
+3) The .grp files are used also to determine which pixels of a sprite are clickable.
     The SD pixels are used even in HD mode, making some vanilla sprites have unintuitive
     clickable pixels.
 
-Animosity handles 1) and 2) automatically when importing HD/HD2 files, as long as the files
+Animosity handles 1) automatically when importing HD/HD2 files, as long as the files
 are placed in anim\ and HD2\anim respectively. While it is possible to import into anim
 files one by one when Animosity doesn't find the correct directory structure, it is quite
 difficult, possibly impossible with current importing setting, to handle correctly and is
 not recommended.
 
-Similarly 3) and 4) can be automatically handled by choosing to "Create GRP" when importing to SD
+Similarly 2) and 3) can be automatically handled by choosing to "Create GRP" when importing to SD
 and when mainSD.anim is saved ad SD\mainSD.anim.
 Note that this linked .grp is selected by arr\images.dat field (which in turn uses arr\images.tbl).
 The default images.dat shares .grps with main unit and its shadow in several cases, if you end
