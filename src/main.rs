@@ -11,6 +11,7 @@ mod arc_error;
 mod combo_box_enum;
 mod ddsgrp;
 mod default_grp_sizes;
+mod edit_entry_count;
 mod frame_export;
 mod frame_export_dialog;
 mod frame_import;
@@ -1144,8 +1145,19 @@ fn create_menu() -> gio::Menu {
         menu.append_section(None, &import_actions);
         menu
     };
+    let anim_menu = {
+        let menu = gio::Menu::new();
+        let actions = {
+            let menu = gio::Menu::new();
+            menu.append_item(&with_accel("_Modify sprite amount...", "app.editEntryCount", ""));
+            menu
+        };
+        menu.append_section(None, &actions);
+        menu
+    };
     menu.append_submenu(Some("_File"), &file_menu);
     menu.append_submenu(Some("_Sprite"), &sprite_menu);
+    menu.append_submenu(Some("_Anim"), &anim_menu);
     if cfg!(debug_assertions) {
         let debug_menu = {
             let menu = gio::Menu::new();
@@ -1265,6 +1277,10 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
         let ui = ui();
         grp_import_dialog::grp_import_dialog(&ui.info, &ui.main_window);
     });
+    action(app, "editEntryCount", false, move |_, _| {
+        let ui = ui();
+        edit_entry_count::dialog(&ui.info, &ui.main_window);
+    });
     if cfg!(debug_assertions) {
         action(app, "debug_write", true, move |_, _| {
             println!("Write test finished");
@@ -1316,7 +1332,7 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
     }
 }
 
-fn enable_file_actions(app: &gtk::Application) {
+fn enable_file_actions(app: &gtk::Application, files: &files::Files) {
     if let Some(a) = lookup_action(app, "save") {
         a.set_enabled(true);
     }
@@ -1329,6 +1345,10 @@ fn enable_file_actions(app: &gtk::Application) {
     if let Some(a) = lookup_action(app, "exportFrames") {
         a.set_enabled(true);
     }
+    if let Some(a) = lookup_action(app, "editEntryCount") {
+        let enable = files.mainsd().is_some();
+        a.set_enabled(enable);
+    }
 }
 
 fn open(filename: &Path) {
@@ -1336,7 +1356,7 @@ fn open(filename: &Path) {
     match files::Files::init(filename) {
         Ok((f, index)) => {
             ui.files_changed(&f);
-            enable_file_actions(&ui.app);
+            enable_file_actions(&ui.app, &f);
             {
                 STATE.with(|x| {
                     let state = x.borrow();

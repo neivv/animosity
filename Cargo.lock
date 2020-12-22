@@ -48,7 +48,7 @@ checksum = "000444226fcff248f2bc4c7625be32c63caccfecc2723a2b9f78a7487a49c407"
 
 [[package]]
 name = "animosity"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "app_dirs",

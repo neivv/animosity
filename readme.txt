@@ -34,7 +34,23 @@ so that it will not be lost when reimporting.
 
 As such, you generally want to export frames first to get a compatible framedef file, even
 if your plan is to completely replace the graphic. Some variables can be also modified by editing
-the file with a text editor, though there is no clear reference for which values are accepted.
+the file with a text editor. Note that .json as a file format is very nitpicky about requiring
+commas after every line of an object/array expect the last, which in turn must not have a comma.
+
+Importing settings that are only editable through framedef.json:
+- "frame_count" to import different amount of images from what was exported.
+    You'll also need to edit "multi_frame_images" -> "frame_count" for each layer if you
+    exported all frames in a single image.
+- "offset_x" and "offset_y" to import all frames with an additional offset.
+    You can just move the frames further right/down with an image editing software to increase
+    the offset without changing this, but this supports negative offsets which some vanilla
+    sprites have.
+- "layers" allows importing more/less layers.
+    You can only have the layers which are already displayed by Animosity.
+    Also note that "multi_frame_images" has data for each layer as well when importing all frames
+    in a single image.
+- "frame_types" Allows editing some unknown value that is set on by-frame basis.
+    See ".anim frame types" below for slightly more details.
 
 ## .anim 
 
@@ -165,3 +181,26 @@ using HD coordinates. E.g. position 1,1 would be 1 pixel right and 1 pixel down 
 top left corner of exported image, but from the first row/column which is not completely
 transparent for this frame. This means that modifying a sprite which has lighting data to use
 more of the blank space left/top of the sprite would misalign the lighting position.
+
+## Adding more sprites with extended images.dat
+
+If you have a need for more than 999 sprites, do the following steps:
+
+1) Add more images.dat entries. (With some different program that supports extending .dats)
+2) Choose .grp names for the new sprites, add them to images.tbl, and update the new images.dat
+    entries to use those .grps.
+    You don't need to actually add the GRP files themselves, animosity will create empty 1-frame
+    GRPs later to match the default 1-frame sprite.
+3) Make sure that you have SD\mainSD.anim and anim\main.lit in your mod.
+4) Open the anim files in Animosity, and select "Anim -> Modify sprite count..." from the menu.
+5) Animosity should detect the extended images.dat size and automatically suggest a value to
+    match it. The single-sprite HD/HD2 .anim files and .grps are created automatically.
+    You'll have to still hit Save to save MainSD.anim and main.lit.
+6) Now everything should work correctly in SC:R.
+7) The new sprites default to 1x1 1-frame black pixel with only diffuse layer.
+    Since you need a framedef.json to import any new frames, you'll have to export something
+    first to get one and then edit it for your needs such as different frame count - yes, it is
+    somewhat awkward.
+    Alternatively you can import from a 1.16.1-compatible GRP which doesn't need any extra
+    information if there's a GRP version of the sprite. Only drawback is that the GRP is limited
+    to 256-color palette and lower resolution which is upscaled for HD/HD2.

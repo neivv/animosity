@@ -139,6 +139,13 @@ impl Lit {
     pub fn sprites(&self) -> &[Sprite] {
         &self.sprites
     }
+
+    pub fn resize(&mut self, new_size: u16) {
+        self.sprites.resize_with(new_size as usize, || Sprite {
+            frames: None,
+            frame_count: 1,
+        });
+    }
 }
 
 impl Sprite {

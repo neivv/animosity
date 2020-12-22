@@ -111,6 +111,9 @@ quick_error! {
         TooManyLayers {
             display("Too many layers")
         }
+        TooManySprites {
+            display("Too many sprites")
+        }
         Eof {
             display("Reached end of input")
         }
@@ -257,6 +260,108 @@ impl Anim {
 
     pub fn scale(&self) -> u8 {
         self.scale
+    }
+
+    /// Writes anim containing only the sprites passed in as parameters.
+    ///
+    /// The anim-global "unknown" is set to 0.
+    pub fn write_new<W: Write + Seek>(
+        mut out: W,
+        scale: u8,
+        layer_names: &[String],
+        sprites: &[(ValuesOrRef, &TexChanges)],
+    ) -> Result<(), Error> {
+        let sprite_count = u16::try_from(sprites.len())
+            .map_err(|_| Error::from(ErrKind::TooManySprites))?;
+        if layer_names.len() > 10 {
+            return Err(ErrKind::TooManyLayers.into());
+        }
+
+        out.write_u32::<LE>(ANIM_MAGIC)?;
+        out.write_u8(scale)?;
+        let ty = match sprite_count == 1 {
+            true => 2,
+            false => 1,
+        };
+        out.write_u8(ty)?;
+        out.write_u16::<LE>(0)?;
+        out.write_u16::<LE>(layer_names.len() as u16)?;
+        out.write_u16::<LE>(sprite_count)?;
+        for name in layer_names.iter().map(|x| &**x).chain(iter::repeat("")).take(10) {
+            let mut buf = [0u8; 0x20];
+            (&mut buf[..]).write_all(name.as_bytes())?;
+            out.write_all(&buf)?;
+        }
+        let sprite_offset_pos = out.seek(SeekFrom::Current(0))?;
+        let mut sprite_offsets = vec![!0u32; sprite_count as usize];
+        if ty == 1 {
+            for &x in &sprite_offsets {
+                out.write_u32::<LE>(x)?;
+            }
+        }
+        for (i, &(ref values, tex_changes)) in sprites.iter().enumerate() {
+            let i = i as u16;
+            sprite_offsets[i as usize] = u32::try_from(out.seek(SeekFrom::Current(0))?)
+                .map_err(|_| ErrKind::ImageWrite(i, ImageWriteError::OutputTooBig))?;
+            Anim::write_new_image(
+                &mut out,
+                sprite_count,
+                values,
+                tex_changes,
+                layer_names.len(),
+            ).map_err(|e| ErrKind::ImageWrite(i, e))?;
+        }
+        if ty == 1 {
+            out.seek(SeekFrom::Start(sprite_offset_pos))?;
+            for &x in &sprite_offsets {
+                out.write_u32::<LE>(x)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Internal helper for write_new
+    fn write_new_image<W: Write + Seek>(
+        out: &mut W,
+        image_count: u16,
+        values: &ValuesOrRef,
+        textures: &TexChanges,
+        texture_count: usize,
+    ) -> Result<(), ImageWriteError> {
+        match *values {
+            ValuesOrRef::Ref(img) => {
+                if img >= image_count as u32 {
+                    return Err(ImageWriteError::InvalidRef(img));
+                }
+                out.write_u16::<LE>(0)?;
+                out.write_u32::<LE>(img)?;
+                for _ in 0..3 {
+                    out.write_u16::<LE>(0)?;
+                }
+            }
+            ValuesOrRef::Values(ref values) => {
+                let frames = &textures.frames;
+                if frames.len() == 0 {
+                    return Err(ImageWriteError::NoFrames);
+                }
+                out.write_u16::<LE>(frames.len() as u16)?;
+                out.write_u16::<LE>(values.unk2)?;
+                out.write_u16::<LE>(values.width)?;
+                out.write_u16::<LE>(values.height)?;
+                let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
+                out.write_u32::<LE>(!0)?;
+                write_textures_patched(out, textures, texture_count)?;
+                let frame_arr_offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
+                    .map_err(|_| ImageWriteError::OutputTooBig)?;
+                write_frames(out, frames)?;
+                let cont_pos = out.seek(SeekFrom::Current(0))?;
+                out.seek(SeekFrom::Start(frame_arr_offset_pos))?;
+                out.write_u32::<LE>(frame_arr_offset)?;
+                out.seek(SeekFrom::Start(cont_pos))?;
+            }
+        }
+        Ok(())
     }
 
     /// Writes a patched anim to `out`. `textures` contains the changed textures and their
