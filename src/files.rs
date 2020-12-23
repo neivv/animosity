@@ -275,7 +275,7 @@ impl ImagesDat {
 
 #[derive(Clone, Debug)]
 enum Edit {
-    Ref(u32),
+    Ref(u16),
     Values(EditValues),
     // Frames, scale, palette
     Grp(Vec<(ddsgrp::Frame, Vec<u8>)>, u8, Option<Vec<u8>>),
@@ -320,7 +320,7 @@ pub struct File<'a> {
     // Outer option is None if not edited, inner option is None if edited to have
     // no palette.
     palette: Option<Option<&'a [u8]>>,
-    image_ref: Option<Option<u32>>,
+    image_ref: Option<Option<u16>>,
     path: &'a Path,
     /// Some for SD sprites, None otherwise
     /// Contains dimensions read from the corresponding GRP set in images.dat,
@@ -512,7 +512,7 @@ impl<'a> File<'a> {
         }
     }
 
-    pub fn image_ref(&self) -> Option<u32> {
+    pub fn image_ref(&self) -> Option<u16> {
         if let Some(img_ref) = self.image_ref {
             return img_ref;
         }
@@ -555,7 +555,7 @@ impl<'a> FileLocation<'a> {
         })
     }
 
-    pub fn image_ref(&self) -> Option<u32> {
+    pub fn image_ref(&self) -> Option<u16> {
         match *self {
             FileLocation::Multiple(sprite, ref mainsd) => {
                 mainsd.sprites().get(sprite).and_then(|x| match *x {
@@ -996,7 +996,6 @@ impl Files {
                 true => Edit::Ref(0),
                 false => {
                     let values = SpriteValues {
-                        unk2: !0,
                         width: 0,
                         height: 0,
                     };
@@ -1010,7 +1009,7 @@ impl Files {
         }
     }
 
-    pub fn set_ref_img(&mut self, sprite: usize, ty: SpriteType, image: u32) {
+    pub fn set_ref_img(&mut self, sprite: usize, ty: SpriteType, image: u16) {
         let unchanged = {
             let file = file_location(
                 self.mainsd_anim.as_ref().map(|x| &x.1),
@@ -1404,7 +1403,6 @@ fn empty_edit(layer_names: &[String], width: u16, height: u16) -> EditValues {
     assert!(width <= 4 && height <= 4);
     EditValues {
         values: SpriteValues {
-            unk2: 0xffff,
             width: 0,
             height: 0,
         },

@@ -4,7 +4,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::iter;
 use std::sync::{Mutex};
 
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt, LE, LittleEndian};
 use ddsfile::{Dds, D3DFormat};
 use quick_error::quick_error;
 
@@ -20,14 +20,14 @@ trait ReadSeek: Read + Seek + Send { }
 impl<T: Read + Seek + Send> ReadSeek for T { }
 
 pub enum SpriteType {
-    Ref(u32),
+    Ref(u16),
     Data(SpriteData),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ValuesOrRef {
     Values(SpriteValues),
-    Ref(u32),
+    Ref(u16),
 }
 
 pub struct SpriteData {
@@ -39,7 +39,6 @@ pub struct SpriteData {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct SpriteValues {
-    pub unk2: u16,
     pub width: u16,
     pub height: u16,
 }
@@ -93,7 +92,7 @@ quick_error! {
         OutputTooBig {
             display("Output file too big")
         }
-        InvalidRef(referenced: u32) {
+        InvalidRef(referenced: u16) {
             display("Referencing invalid image {}", referenced)
         }
     }
@@ -210,39 +209,36 @@ impl Anim {
                 layer_names.push(format!("Layer {}", i));
             }
         }
-        r.seek(SeekFrom::Start(0x14c))?;
-        let mut sprite_offsets = vec![0; entries as usize];
         if ty == 1 {
-            r.read_u32_into::<LE>(&mut sprite_offsets)?;
+            r.seek(SeekFrom::Start(0x14c + 999 * 4))?;
         } else {
-            sprite_offsets[0] = r.seek(SeekFrom::Current(0))? as u32;
+            r.seek(SeekFrom::Start(0x14c))?;
         }
         let mut sprites = Vec::with_capacity(entries as usize);
-        for (i, offset) in sprite_offsets.into_iter().enumerate() {
-            r.seek(SeekFrom::Start(offset as u64))?;
+        for i in 0..entries {
+            // Note: Each sprite is expected to follow previous one's frame data
+            // (The frame data will be explicitly seeked to though)
             let frame_count = r.read_u16::<LE>()?;
-            if frame_count == 0 {
-                let ref_id = r.read_u32::<LE>()?;
-                if ref_id > entries as u32 {
+            let ref_id = r.read_u16::<LE>()?;
+            let width = r.read_u16::<LE>()?;
+            let height = r.read_u16::<LE>()?;
+            let frame_arr_offset = r.read_u32::<LE>()?;
+            if ref_id != u16::max_value() {
+                if ref_id > entries {
                     return Err(ErrKind::Format(
                         format!("Image {:x} refers past entry amount to {:x}", i, ref_id)
                     ).into());
                 }
                 sprites.push(SpriteType::Ref(ref_id));
             } else {
-                let unk2 = r.read_u16::<LE>()?;
-                let width = r.read_u16::<LE>()?;
-                let height = r.read_u16::<LE>()?;
-                let frame_arr_offset = r.read_u32::<LE>()?;
                 let textures = read_textures(&mut r, layers as u32)
-                    .map_err(|e| ErrKind::TextureReadError(i as u16, e))?;
+                    .map_err(|e| ErrKind::TextureReadError(i, e))?;
                 r.seek(SeekFrom::Start(frame_arr_offset as u64))?;
                 let frames = read_frames(&mut r, frame_count)?;
                 sprites.push(SpriteType::Data(SpriteData {
                     frames,
                     textures,
                     values: SpriteValues {
-                        unk2,
                         width,
                         height,
                     },
@@ -293,16 +289,17 @@ impl Anim {
             out.write_all(&buf)?;
         }
         let sprite_offset_pos = out.seek(SeekFrom::Current(0))?;
-        let mut sprite_offsets = vec![!0u32; sprite_count as usize];
+        let mut sprite_offsets = vec![0xffu8; 999 * 4];
         if ty == 1 {
-            for &x in &sprite_offsets {
-                out.write_u32::<LE>(x)?;
-            }
+            out.write_all(&sprite_offsets)?;
         }
         for (i, &(ref values, tex_changes)) in sprites.iter().enumerate() {
             let i = i as u16;
-            sprite_offsets[i as usize] = u32::try_from(out.seek(SeekFrom::Current(0))?)
-                .map_err(|_| ErrKind::ImageWrite(i, ImageWriteError::OutputTooBig))?;
+            if let Some(pos) = sprite_offsets.get_mut((i as usize * 4)..(i as usize * 4 + 4)) {
+                let offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
+                    .map_err(|_| ErrKind::ImageWrite(i, ImageWriteError::OutputTooBig))?;
+                LittleEndian::write_u32(pos, offset);
+            }
             Anim::write_new_image(
                 &mut out,
                 sprite_count,
@@ -313,9 +310,7 @@ impl Anim {
         }
         if ty == 1 {
             out.seek(SeekFrom::Start(sprite_offset_pos))?;
-            for &x in &sprite_offsets {
-                out.write_u32::<LE>(x)?;
-            }
+            out.write_all(&sprite_offsets)?;
         }
 
         Ok(())
@@ -331,12 +326,12 @@ impl Anim {
     ) -> Result<(), ImageWriteError> {
         match *values {
             ValuesOrRef::Ref(img) => {
-                if img >= image_count as u32 {
+                if img >= image_count {
                     return Err(ImageWriteError::InvalidRef(img));
                 }
                 out.write_u16::<LE>(0)?;
-                out.write_u32::<LE>(img)?;
-                for _ in 0..3 {
+                out.write_u16::<LE>(img)?;
+                for _ in 0..4 {
                     out.write_u16::<LE>(0)?;
                 }
             }
@@ -346,7 +341,7 @@ impl Anim {
                     return Err(ImageWriteError::NoFrames);
                 }
                 out.write_u16::<LE>(frames.len() as u16)?;
-                out.write_u16::<LE>(values.unk2)?;
+                out.write_u16::<LE>(u16::max_value())?;
                 out.write_u16::<LE>(values.width)?;
                 out.write_u16::<LE>(values.height)?;
                 let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
@@ -397,16 +392,17 @@ impl Anim {
             out.write_all(&buf)?;
         }
         let sprite_offset_pos = out.seek(SeekFrom::Current(0))?;
-        let mut sprite_offsets = vec![!0u32; sprite_count as usize];
+        let mut sprite_offsets = vec![0xffu8; 999 * 4];
         if ty == 1 {
-            for &x in &sprite_offsets {
-                out.write_u32::<LE>(x)?;
-            }
+            out.write_all(&sprite_offsets)?;
         }
         let mut read = self.read.lock().unwrap();
         for i in 0..sprite_count {
-            sprite_offsets[i as usize] = u32::try_from(out.seek(SeekFrom::Current(0))?)
-                .map_err(|_| ErrKind::ImageWrite(i, ImageWriteError::OutputTooBig))?;
+            if let Some(pos) = sprite_offsets.get_mut((i as usize * 4)..(i as usize * 4 + 4)) {
+                let offset = u32::try_from(out.seek(SeekFrom::Current(0))?)
+                    .map_err(|_| ErrKind::ImageWrite(i, ImageWriteError::OutputTooBig))?;
+                LittleEndian::write_u32(pos, offset);
+            }
 
             let store;
             let values = match data_changes.iter().find(|x| x.0 == i as usize) {
@@ -428,9 +424,7 @@ impl Anim {
         }
         if ty == 1 {
             out.seek(SeekFrom::Start(sprite_offset_pos))?;
-            for &x in &sprite_offsets {
-                out.write_u32::<LE>(x)?;
-            }
+            out.write_all(&sprite_offsets)?;
         }
         Ok(())
     }
@@ -448,12 +442,12 @@ impl Anim {
     ) -> Result<(), ImageWriteError> {
         match *values {
             ValuesOrRef::Ref(img) => {
-                if img >= image_count as u32 {
+                if img >= image_count {
                     return Err(ImageWriteError::InvalidRef(img));
                 }
                 out.write_u16::<LE>(0)?;
-                out.write_u32::<LE>(img)?;
-                for _ in 0..3 {
+                out.write_u16::<LE>(img)?;
+                for _ in 0..4 {
                     out.write_u16::<LE>(0)?;
                 }
             }
@@ -474,7 +468,7 @@ impl Anim {
                     return Err(ImageWriteError::NoFrames);
                 }
                 out.write_u16::<LE>(frames.len() as u16)?;
-                out.write_u16::<LE>(values.unk2)?;
+                out.write_u16::<LE>(u16::max_value())?;
                 out.write_u16::<LE>(values.width)?;
                 out.write_u16::<LE>(values.height)?;
                 let frame_arr_offset_pos = out.seek(SeekFrom::Current(0))?;
