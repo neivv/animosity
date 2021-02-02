@@ -1135,7 +1135,9 @@ fn create_menu() -> gio::Menu {
     };
     menu.append_submenu(Some("_File"), &file_menu);
     menu.append_submenu(Some("_Sprite"), &sprite_menu);
-    menu.append_submenu(Some("_Anim"), &anim_menu);
+    if cfg!(debug_assertions) {
+        menu.append_submenu(Some("_Anim"), &anim_menu);
+    }
     if cfg!(debug_assertions) {
         let debug_menu = {
             let menu = gio::Menu::new();
