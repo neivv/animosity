@@ -1418,7 +1418,7 @@ fn init_css_provider() -> gtk::CssProvider {
                 msg.push_str(&e);
                 msg.push_str("\n");
             }
-            panic!(msg);
+            panic!("{}", msg);
         }
     }
     css
