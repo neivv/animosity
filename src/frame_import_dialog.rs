@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -486,6 +487,11 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 let send2 = send.clone();
                 let frame_count = frame_info.frame_count;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    if let Some(ref path) = linked_grp_path {
+                        if let Some(dir) = path.parent() {
+                            fs::create_dir_all(dir)?;
+                        }
+                    }
                     let mut files = files_arc.lock();
                     frame_import::import_frames_grp(
                         &mut files,
