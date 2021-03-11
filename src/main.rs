@@ -18,6 +18,7 @@ mod frame_import;
 mod frame_import_dialog;
 mod frame_info;
 mod gl;
+mod grp;
 mod grp_decode;
 mod grp_import_dialog;
 mod int_entry;

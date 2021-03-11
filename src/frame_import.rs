@@ -15,6 +15,7 @@ use crate::anim_encoder;
 use crate::ddsgrp;
 use crate::files;
 use crate::frame_info::{self, FrameInfo};
+use crate::grp::GrpWriter;
 use crate::grp_decode;
 use crate::normal_encoding;
 use crate::{SpriteType, Error};
@@ -29,6 +30,8 @@ pub fn import_frames_grp<F: Fn(f32) + Sync>(
     format: Option<anim::TextureFormat>,
     sprite: usize,
     scale: u8,
+    // For writing grp for SD ddsgrp cmdicon imports
+    linked_grp_path: Option<&Path>,
     report_progress: F,
 ) -> Result<(), Error> {
     let image_data_cache = Mutex::new(ImageDataCache::default());
@@ -40,6 +43,7 @@ pub fn import_frames_grp<F: Fn(f32) + Sync>(
     let palette = Mutex::new(None);
     let palette_set = AtomicBool::new(false);
 
+    let write_grp = linked_grp_path.is_some();
     let mut frames = (0..frame_info.frame_count).into_par_iter()
         .map(|i| {
             let tls_cache = tls.get_or(|| RefCell::new(TlsImageDataCache::default()));
@@ -49,6 +53,11 @@ pub fn import_frames_grp<F: Fn(f32) + Sync>(
 
             let (data, width, height, frame_palette) =
                 frame_reader.read_frame(frame_info, 0, i, frame_scale)?;
+            let uncompressed = match write_grp {
+                // Not too worried about this clone, when writing SD grps the frames are small.
+                true => Some(data.clone()),
+                false => None,
+            };
             let data = if let Some(format) = format {
                 anim_encoder::encode(&data, width, height, format)
             } else {
@@ -72,12 +81,36 @@ pub fn import_frames_grp<F: Fn(f32) + Sync>(
                 size: data.len() as u32,
                 offset: !0,
             };
-            Ok((i, (frame, data)))
+            Ok((i, (frame, data), uncompressed))
         })
         .collect::<Result<Vec<_>, Error>>()?;
     frames.sort_by_key(|x| x.0);
-    let frames = frames.into_iter().map(|x| x.1).collect();
 
+    // Write cmdicons.grp for SD cmdicons etc
+    if let Some(linked_grp_path) = linked_grp_path {
+        let frame_count = u16::try_from(frame_info.frame_count).context("Too many frames")?;
+        let (width, height) = frames
+            .iter()
+            .map(|(_, (frame, _encoded), _rgba)| (frame.width, frame.height))
+            .fold((0, 0), |old, new| (old.0.max(new.0), old.1.max(new.1)));
+
+        let mut writer = GrpWriter::new(frame_count, width, height);
+        for &(frame_n, (ref frame, _), ref data) in frames.iter() {
+            let data = data.as_deref().expect("Should always be Some");
+            // Note: x/y are 0 as ddsgrp don't store that per-frame
+            // SC:R doesn't seem to need them, at least with cmdicons.
+            let frame_w = u8::try_from(frame.width)
+                .with_context(|| format!("Frame {} is too wide", frame_n))?;
+            let frame_h = u8::try_from(frame.height)
+                .with_context(|| format!("Frame {} is too tall", frame_n))?;
+            writer.add_frame(frame_n as u16, 0, 0, frame_w, frame_h, data);
+        }
+        let grp = writer.finish();
+        std::fs::write(linked_grp_path, &grp)
+            .with_context(|| format!("Couldn't write {}", linked_grp_path.display()))?;
+    }
+
+    let frames = frames.into_iter().map(|x| x.1).collect();
     let palette = palette.into_inner().unwrap();
     files.set_grp_changes(sprite, frames, scale, palette);
     Ok(())
@@ -654,8 +687,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
             .context("Sprite dimensions too large")?;
         let height = u16::try_from(height)
             .context("Sprite dimensions too large")?;
-        let mut grp = Vec::new();
-        layout.write_grp(&mut std::io::Cursor::new(&mut grp), width, height)
+        let grp = layout.write_grp(width, height)
             .context("Couldn't write GRP")?;
         std::fs::write(grp_path, &grp)
             .with_context(|| format!("Couldn't write {}", grp_path.display()))?;

@@ -9,12 +9,14 @@ use serde_derive::{Deserialize, Serialize};
 
 use crate::anim;
 use crate::combo_box_enum::ComboBoxEnum;
+use crate::frame_export_dialog::SavedCheckbox;
 use crate::frame_import;
 use crate::frame_info::{FrameInfo, parse_frame_info};
 use crate::int_entry::{IntSize, IntEntry};
 use crate::select_dir::{self, read_config_entry, set_config_entry};
 use crate::{
     label_section, lookup_action, error_msg_box, info_msg_box, SpriteInfo, SpriteType, Error,
+    error_from_panic,
 };
 
 use crate::ui_helpers::*;
@@ -34,6 +36,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let tex_formats;
     let is_anim;
     let path;
+    let ddsgrp_linked_grp;
     let grp_scale;
     let had_palette;
     {
@@ -46,6 +49,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         tex_formats = file.texture_formats();
         had_palette = file.palette().is_some();
         path = file.path().to_owned();
+        ddsgrp_linked_grp = file.ddsgrp_linked_grp();
         grp_scale = file.grp().map(|x| x.scale);
     }
     let is_sd_anim = is_anim && tex_id.1 == SpriteType::Sd;
@@ -171,6 +175,28 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         bx
     };
     layers_bx.set_tooltip_text(Some(encoding_tooltip_text()));
+
+    // Checkbox to create cmdicons / wirefram / tranwire grp for sd
+    let ddsgrp_make_linked_grp;
+    if let Some(ref linked_grp_path) = ddsgrp_linked_grp {
+        let check = SavedCheckbox::new_with_default(
+            "ddsgrp_make_sd_grp",
+            &format!("Create {}", linked_grp_path.display()),
+            true,
+        );
+        check.widget().set_tooltip_text(Some(&format!(
+            "This SD .dds.grp file determines frame dimensions from {}.\n\
+            If this setting is enabled, a new .grp will be created with dimensions \
+            from imported frames.\n\
+            \n\
+            Keeping this setting enabled is recommended.",
+            linked_grp_path.display(),
+        )));
+        ddsgrp_make_linked_grp = Some(check);
+    } else {
+        ddsgrp_make_linked_grp = None;
+    }
+
     let grp_scale_entry;
     let grp_scale_bx;
     if is_anim {
@@ -283,6 +309,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     let waiting_for_thread2 = waiting_for_thread.clone();
     let rest_of_ui: Rc<RefCell<Vec<gtk::Box>>> = Rc::new(RefCell::new(Vec::new()));
     let rest_of_ui2 = rest_of_ui.clone();
+    let ddsgrp_make_linked_grp2 = ddsgrp_make_linked_grp.clone();
     let files_root: Option<PathBuf> = files.root_path().map(|x| x.into());
     ok_button.connect_clicked(move |_| {
         if waiting_for_thread.get() {
@@ -406,23 +433,26 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             };
             let layer_names = layer_names.clone();
             std::thread::spawn(move || {
-                let mut files = files_arc.lock();
-                let result = frame_import::import_frames(
-                    &mut files,
-                    &frame_info,
-                    hd2_fi.as_ref(),
-                    &dir,
-                    hd2_dir.as_ref().map(|x| &**x),
-                    frame_scale,
-                    hd2_scale,
-                    &formats,
-                    &layer_names,
-                    tex_id.0,
-                    tex_id.1,
-                    grp_filename.as_ref().map(|x| &**x),
-                    |step| send.send(Progress::Progress(step)).unwrap(),
-                );
-                let _ = send.send(Progress::Done(result.map(|()| frame_count)));
+                let send2 = send.clone();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let mut files = files_arc.lock();
+                    frame_import::import_frames(
+                        &mut files,
+                        &frame_info,
+                        hd2_fi.as_ref(),
+                        &dir,
+                        hd2_dir.as_ref().map(|x| &**x),
+                        frame_scale,
+                        hd2_scale,
+                        &formats,
+                        &layer_names,
+                        tex_id.0,
+                        tex_id.1,
+                        grp_filename.as_ref().map(|x| &**x),
+                        |step| send.send(Progress::Progress(step)).unwrap(),
+                    )
+                })).unwrap_or_else(|e| Err(error_from_panic(e)));
+                let _ = send2.send(Progress::Done(result.map(|()| frame_count)));
             });
         } else {
             let format = match grp_format {
@@ -444,19 +474,32 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                     return;
                 }
             };
+            let make_linked_grp = ddsgrp_make_linked_grp2
+                .as_ref()
+                .map(|x| x.get_active())
+                .unwrap_or(false);
+            let linked_grp_path = match make_linked_grp {
+                true => ddsgrp_linked_grp.clone(),
+                false => None,
+            };
             std::thread::spawn(move || {
-                let mut files = files_arc.lock();
-                let result = frame_import::import_frames_grp(
-                    &mut files,
-                    &frame_info,
-                    &dir,
-                    frame_scale,
-                    format,
-                    tex_id.0,
-                    scale,
-                    |step| send.send(Progress::Progress(step)).unwrap(),
-                );
-                let _ = send.send(Progress::Done(result.map(|()| frame_info.frame_count)));
+                let send2 = send.clone();
+                let frame_count = frame_info.frame_count;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let mut files = files_arc.lock();
+                    frame_import::import_frames_grp(
+                        &mut files,
+                        &frame_info,
+                        &dir,
+                        frame_scale,
+                        format,
+                        tex_id.0,
+                        scale,
+                        linked_grp_path.as_deref(),
+                        |step| send.send(Progress::Progress(step)).unwrap(),
+                    )
+                })).unwrap_or_else(|e| Err(error_from_panic(e)));
+                let _ = send2.send(Progress::Done(result.map(|()| frame_count)));
             });
         }
         let rest_of_ui = rest_of_ui2.clone();
@@ -577,6 +620,9 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         rest_bx.pack_start(&hd2, false, false, 0);
     }
     rest_bx.pack_start(&layers_bx, false, false, 0);
+    if let Some(sd_grp) = ddsgrp_make_linked_grp {
+        rest_bx.pack_start(sd_grp.widget(), false, false, 0);
+    }
     if let Some(scale) = grp_scale_bx {
         rest_bx.pack_start(&scale, false, false, 0);
     }

@@ -321,6 +321,7 @@ pub struct File<'a> {
     // no palette.
     palette: Option<Option<&'a [u8]>>,
     image_ref: Option<Option<u16>>,
+    /// Filesystem path to the file
     path: &'a Path,
     /// Some for SD sprites, None otherwise
     /// Contains dimensions read from the corresponding GRP set in images.dat,
@@ -337,8 +338,19 @@ pub enum FileLocation<'a> {
 }
 
 impl<'a> File<'a> {
+    /// Filesystem path to the file. Note that with mainsd different files
+    /// share the file path.
     pub fn path(&self) -> &Path {
         self.path
+    }
+
+    /// Few SD ddsgrps use the original .grp for dimensions, return path
+    /// to that if it exists. Well, cmdicons is the only one I know of,
+    /// wireframe does not use grp.
+    /// (Currently just assumes that it's SD grp if its parent directiories match,
+    /// as no root data is really stored if ddsgrp is opened)
+    pub fn ddsgrp_linked_grp(&self) -> Option<PathBuf> {
+        ddsgrp_linked_grp(self.path())
     }
 
     pub fn is_anim(&self) -> bool {
@@ -1626,6 +1638,60 @@ fn file_root_from_file(file: &Path) -> Option<(&Path, Option<usize>)> {
 
 fn image_name(image_id: u32) -> String {
     format!("#{:03}", image_id)
+}
+
+fn path_remove_suffix_casei<'a>(path: &'a Path, suffix: &Path) -> Option<&'a Path> {
+    let mut path = path;
+    let mut suffix = suffix;
+    while let Some(part) = suffix.file_name() {
+        let part2 = path.file_name()?;
+        if part.to_str()?.eq_ignore_ascii_case(part2.to_str()?) == false {
+            return None;
+        }
+        path = path.parent()?;
+        suffix = suffix.parent()?;
+    }
+    Some(path)
+}
+
+fn ddsgrp_linked_grp(path: &Path) -> Option<PathBuf> {
+    // SD/unit/cmdicons/cmdicons.dds.grp -> unit/cmdicons/cmdicons.grp
+    // SD/unit/wirefram/{grpwire, tranwire, wirefram}.dds.grp ->
+    //     unit/wirefram/{grpwire, tranwire, wirefram}.grp
+    let mapping = [
+        ("SD/unit/cmdicons/cmdicons.dds.grp", "unit/cmdicons/cmdicons.grp"),
+    ];
+    mapping
+        .iter()
+        .find_map(|(base, new)| {
+            Some(path_remove_suffix_casei(path, Path::new(base))?.join(new))
+        })
+}
+
+#[test]
+fn test_ddsgrp_linked_grp() {
+    let normalize = |x: PathBuf| x.display().to_string().to_ascii_lowercase().replace("\\", "/");
+    assert_eq!(
+        ddsgrp_linked_grp(Path::new("asd/dir/SD/unit/cmdicons/cmdicons.dds.grp"))
+            .map(normalize),
+        Some(String::from("asd/dir/unit/cmdicons/cmdicons.grp")),
+    );
+    assert_eq!(
+        ddsgrp_linked_grp(Path::new("asd/dir/HD2/unit/cmdicons/cmdicons.dds.grp")),
+        None,
+    );
+    assert_eq!(
+        ddsgrp_linked_grp(Path::new("asd/dir/unit/cmdicons/cmdicons.dds.grp")),
+        None,
+    );
+    assert_eq!(
+        ddsgrp_linked_grp(Path::new("asd/dir/SD/unit/cmdicons.dds.grp")),
+        None,
+    );
+    assert_eq!(
+        ddsgrp_linked_grp(Path::new("asd/dir/SD/unit/wirefram/cmdicons.dds.grp")),
+        None,
+    );
 }
 
 #[test]
