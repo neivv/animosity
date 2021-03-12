@@ -270,12 +270,20 @@ struct SpriteValues {
     height: Arc<IntEntry>,
     texture_dimensions: gtk::Label,
     frame_count_label: gtk::Label,
+    rel_type: Arc<IntEntry>,
+    rel_image: Arc<IntEntry>,
 }
 
 impl SpriteValues {
     fn new() -> SpriteValues {
+        use crate::ui_helpers::*;
+
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let ref_enable = gtk::CheckButton::with_label("References image");
+        ref_enable.tooltip(
+            "Causes SD graphic data read from another image's entry.\n\
+            The 'Relation' section below can be used to do same for HD graphics."
+        );
         ref_enable.set_sensitive(false);
         let ref_index = IntEntry::new(IntSize::Int16);
         ref_index.frame.set_sensitive(false);
@@ -286,6 +294,40 @@ impl SpriteValues {
         let unk3_bx = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let width = IntEntry::new(IntSize::Int16);
         let height = IntEntry::new(IntSize::Int16);
+        let rel_type = IntEntry::new(IntSize::Int32);
+        let rel_image = IntEntry::new(IntSize::Int16);
+        let relation_bx = box_vertical(&[
+            box_horizontal(&[
+                &gtk::Label::new(Some("Type")),
+                &box_expand(rel_type.widget()),
+            ]).tooltip(
+                "Selects what kind of relation this image has to another image.\n\
+                Mainly the only value you may want to use is 512, which makes the game \
+                use another image's anim for HD graphics - similar to what 'References image' \
+                does for SD graphics.\n\
+                \n\
+                Setting value to 8 ('Shadow') can be used to enable a very minor graphical \
+                effect: When shadow stacking is disabled in SC:R settings, this sprite will \
+                flash white during Protoss building warp-in flash. \n\
+                \n\
+                All other values seem to have no effect in-game. Seems that they were meant for \
+                telling HD renderer to draw images of different types differently, but the devs \
+                ended up using images.dat drawfunc settings for this in the end."
+            ),
+            box_horizontal(&[
+                &gtk::Label::new(Some("Image")),
+                &box_expand(rel_image.widget()),
+            ]).tooltip(
+                "Image ID the relation refers to.\n\
+                Only meaningful for type 512 (HD reference).\n\
+                While other types have the related image set too, the game \
+                will not use it for anything."
+            ),
+        ]);
+        let relations = label_section("Relation", &relation_bx);
+        relations.set_margin_top(5);
+        relations.set_margin_start(2);
+        relations.set_margin_end(2);
         bx.set_sensitive(false);
         bx.pack_start(&ref_enable, false, false, 0);
         bx.pack_start(ref_index.widget(), false, false, 0);
@@ -295,6 +337,7 @@ impl SpriteValues {
         unk3_bx.pack_start(width.widget(), true, true, 0);
         unk3_bx.pack_start(height.widget(), true, true, 0);
         bx.pack_start(&unk3_bx, false, false, 0);
+        bx.pack_start(&relations, false, false, 0);
         SpriteValues {
             bx,
             ref_index,
@@ -303,6 +346,8 @@ impl SpriteValues {
             height,
             texture_dimensions,
             frame_count_label,
+            rel_type,
+            rel_image,
         }
     }
 
@@ -361,10 +406,24 @@ impl SpriteValues {
         );
         IntEntry::connect_actions(&self.width, sprite_actions, "init_unk3a", "edit_unk3a");
         IntEntry::connect_actions(&self.height, sprite_actions, "init_unk3b", "edit_unk3b");
+        IntEntry::connect_actions(
+            &self.rel_type,
+            sprite_actions,
+            "init_rel_type",
+            "edit_rel_type",
+        );
+        IntEntry::connect_actions(
+            &self.rel_image,
+            sprite_actions,
+            "init_rel_image",
+            "edit_rel_image",
+        );
         let i = self.ref_index.clone();
         let u3a = self.width.clone();
         let u3b = self.height.clone();
         let bx = self.bx.clone();
+        let rel_type = self.rel_type.clone();
+        let rel_image = self.rel_image.clone();
         if let Some(a) = lookup_action(sprite_actions, "sprite_exists") {
             a.connect_activate(move |_, param| {
                 if let Some(exists) = param.as_ref().and_then(|x| x.get::<bool>()) {
@@ -373,6 +432,8 @@ impl SpriteValues {
                         u3a.clear();
                         u3b.clear();
                         i.clear();
+                        rel_type.clear();
+                        rel_image.clear();
                     }
                 }
             });
@@ -823,6 +884,26 @@ impl SpriteInfo {
                 });
             }
         });
+        action(group, "init_rel_type", true, Some("u"), move |_, _| {
+        });
+        let s = this.clone();
+        action(group, "edit_rel_type", true, Some("u"), move |_, param| {
+            if let Some(value) = param.and_then(|x| x.get::<u32>()) {
+                s.update_rel(|x| {
+                    x.mode = value;
+                });
+            }
+        });
+        action(group, "init_rel_image", true, Some("u"), move |_, _| {
+        });
+        let s = this.clone();
+        action(group, "edit_rel_image", true, Some("u"), move |_, param| {
+            if let Some(value) = param.and_then(|x| x.get::<u32>()) {
+                s.update_rel(|x| {
+                    x.image = value as u16;
+                });
+            }
+        });
         action(group, "sprite_exists", true, Some("b"), move |_, _| {
         });
         action(group, "texture_size", true, Some("s"), move |_, _| {
@@ -904,6 +985,26 @@ impl SpriteInfo {
         }
     }
 
+    fn update_rel<F: FnOnce(&mut files::ImageRelation)>(&self, fun: F) {
+        let dirty;
+        {
+            let tex_id = self.tex_id();
+            let mut files = match self.files.try_lock() {
+                Ok(o) => o,
+                _ => return,
+            };
+            if let Some(rels) = files.images_rel() {
+                let mut rel = rels.get(tex_id.0 as u16);
+                fun(&mut rel);
+                rels.set(tex_id.0 as u16, rel);
+            }
+            dirty = files.has_changes();
+        }
+        if let Some(a) = lookup_action(&self.sprite_actions, "is_dirty") {
+            a.activate(Some(&dirty.to_variant()));
+        }
+    }
+
     fn changed_type_from_event(&self) {
         let tex_id = self.tex_id();
         let mut files = match self.files.try_lock() {
@@ -962,6 +1063,12 @@ impl SpriteInfo {
                 self.sprite_actions.activate_action("init_unk3a", Some(&variant));
                 let variant = (data.height as u32).to_variant();
                 self.sprite_actions.activate_action("init_unk3b", Some(&variant));
+            }
+            if let Some(rel) = file.image_rel() {
+                let variant = (rel.mode as u32).to_variant();
+                self.sprite_actions.activate_action("init_rel_type", Some(&variant));
+                let variant = (rel.image as u32).to_variant();
+                self.sprite_actions.activate_action("init_rel_image", Some(&variant));
             }
             let frame_count = if is_anim {
                 file.frames().map(|x| x.len() as u32).unwrap_or(0)
@@ -1136,9 +1243,7 @@ fn create_menu() -> gio::Menu {
     };
     menu.append_submenu(Some("_File"), &file_menu);
     menu.append_submenu(Some("_Sprite"), &sprite_menu);
-    if cfg!(debug_assertions) {
-        menu.append_submenu(Some("_Anim"), &anim_menu);
-    }
+    menu.append_submenu(Some("_Anim"), &anim_menu);
     if cfg!(debug_assertions) {
         let debug_menu = {
             let menu = gio::Menu::new();
@@ -1464,8 +1569,6 @@ fn create_ui(app: &gtk::Application) -> Ui {
 }
 
 fn label_section<O: IsA<gtk::Widget>>(name: &str, obj: &O) -> gtk::Box {
-    let label = gtk::Label::new(Some(name));
-    label.set_halign(gtk::Align::Start);
     let frame = gtk::Frame::new(Some(name));
     obj.set_margin_top(obj.get_margin_top() + 2);
     obj.set_margin_bottom(obj.get_margin_bottom() + 2);

@@ -25,6 +25,7 @@ pub struct Files {
     images_dat: ImagesDat,
     images_tbl: Vec<u8>,
     lit: Option<LitFile>,
+    images_rel: Option<ImagesRel>,
     new_entry_count: Option<u16>,
 
     /// Default layer names.
@@ -34,6 +35,68 @@ pub struct Files {
     /// (Names are taken from first available sprite)
     sd_layer_names: Option<Vec<String>>,
     hd_layer_names: Option<Vec<String>>,
+}
+
+pub struct ImagesRel {
+    original: Vec<u8>,
+    editable: Vec<u8>,
+    dirty: bool,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct ImageRelation {
+    pub mode: u32,
+    pub image: u16,
+}
+
+impl ImagesRel {
+    fn has_changes(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn get(&self, image: u16) -> ImageRelation {
+        self.editable.get((image as usize * 8)..)
+            .and_then(|x| x.get(..8))
+            .map(|x| ImageRelation {
+                mode: LittleEndian::read_u32(x),
+                image: LittleEndian::read_u16(&x[4..]),
+            })
+            .unwrap_or_else(|| ImageRelation {
+                mode: 1,
+                image: 0,
+            })
+    }
+
+    pub fn resize(&mut self, new_size: u16) {
+        for _ in (self.editable.len() / 8)..(new_size as usize) {
+            self.editable.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]);
+        }
+        self.dirty = true;
+    }
+
+    pub fn set(&mut self, image: u16, value: ImageRelation) {
+        let pos = (image as usize * 8)..(image as usize * 8 + 8);
+        if let Some(out) = self.editable.get_mut(pos.clone()) {
+            LittleEndian::write_u32(&mut out[0..], value.mode);
+            let image = if value.image == 65535 { -1 } else {value.image as i32 };
+            LittleEndian::write_i32(&mut out[4..], image);
+            self.dirty = if self.original.get(pos.clone()) != self.editable.get(pos) {
+                true
+            } else {
+                self.original == self.editable
+            };
+        }
+    }
+
+    fn write<W: Write + Seek>(&self, out: &mut W) -> Result<(), Error> {
+        out.write_all(&self.editable)?;
+        Ok(())
+    }
+
+    fn reset_original(&mut self) {
+        self.dirty = false;
+        self.original = self.editable.clone();
+    }
 }
 
 pub struct LitFile {
@@ -65,11 +128,7 @@ impl LitFile {
             })
     }
 
-    /// Writes the edited lit to `out` and updates `self.original` so that
-    /// `has_changes()` will return false.
-    ///
-    /// On error `self` stays unchanged.
-    fn write_and_set_original<W: Write + Seek>(&mut self, out: &mut W) -> Result<(), Error> {
+    fn write<W: Write + Seek>(&self, out: &mut W) -> Result<(), Error> {
         let mut new_original = self.editable.clone();
         for (i, enabled) in self.enabled.iter().cloned().enumerate() {
             if !enabled {
@@ -77,8 +136,17 @@ impl LitFile {
             }
         }
         new_original.write(out)?;
-        self.original = new_original;
         Ok(())
+    }
+
+    fn reset_original(&mut self) {
+        let mut new_original = self.editable.clone();
+        for (i, enabled) in self.enabled.iter().cloned().enumerate() {
+            if !enabled {
+                new_original.remove_sprite(i);
+            }
+        }
+        self.original = new_original;
     }
 
     pub fn enable_sprite(&mut self, index: usize, frame_count: u32) -> &mut anim_lit::Sprite {
@@ -120,6 +188,7 @@ impl LitFile {
 
 static DEFAULT_IMAGES_TBL: &[u8] = include_bytes!("../arr/images.tbl");
 static DEFAULT_IMAGES_DAT: &[u8] = include_bytes!("../arr/images.dat");
+static DEFAULT_IMAGES_REL: &[u8] = include_bytes!("../arr/images.rel");
 
 /// Cache reads of grps for SD frame sizes
 struct SdGrpSizes {
@@ -327,6 +396,7 @@ pub struct File<'a> {
     /// Contains dimensions read from the corresponding GRP set in images.dat,
     /// or an error if it could not be read.
     grp_dimensions: Option<Result<(u16, u16), ArcError>>,
+    image_rel: Option<ImageRelation>,
 }
 
 pub enum FileLocation<'a> {
@@ -530,6 +600,10 @@ impl<'a> File<'a> {
         }
         self.location.image_ref()
     }
+
+    pub fn image_rel(&self) -> Option<ImageRelation> {
+        self.image_rel
+    }
 }
 
 impl<'a> FileLocation<'a> {
@@ -692,6 +766,7 @@ impl Files {
             images_dat: ImagesDat::empty(),
             images_tbl: Vec::new(),
             lit: None,
+            images_rel: None,
             new_entry_count: None,
             sd_layer_names: None,
             hd_layer_names: None,
@@ -723,6 +798,8 @@ impl Files {
                 .unwrap_or_else(|_| DEFAULT_IMAGES_DAT.into());
             let images_tbl = std::fs::read(root.join("arr/images.tbl"))
                 .unwrap_or_else(|_| DEFAULT_IMAGES_TBL.into());
+            let images_rel = std::fs::read(root.join("images.rel"))
+                .unwrap_or_else(|_| DEFAULT_IMAGES_REL.into());
             let lit_path = root.join("anim/main.lit");
             let lit = if lit_path.exists() && lit_path.is_file() {
                 let file = fs::File::open(&lit_path)
@@ -753,6 +830,11 @@ impl Files {
                     .context("Invalid images.dat")?,
                 images_tbl,
                 lit,
+                images_rel: Some(ImagesRel {
+                    editable: images_rel.clone(),
+                    original: images_rel,
+                    dirty: false,
+                }),
                 new_entry_count: None,
                 sd_layer_names,
                 hd_layer_names,
@@ -772,6 +854,7 @@ impl Files {
                         images_dat: ImagesDat::empty(),
                         images_tbl: Vec::new(),
                         lit: None,
+                        images_rel: None,
                         new_entry_count: None,
                         sd_layer_names: Some(sd_layer_names),
                         hd_layer_names: None,
@@ -788,6 +871,7 @@ impl Files {
                         images_dat: ImagesDat::empty(),
                         images_tbl: Vec::new(),
                         lit: None,
+                        images_rel: None,
                         new_entry_count: None,
                         sd_layer_names: None,
                         hd_layer_names: None,
@@ -809,6 +893,7 @@ impl Files {
         let mut texture_sizes = None;
         let mut grp_textures = None;
         let mut palette = None;
+        let image_rel = self.images_rel().as_ref().map(|x| x.get(sprite as u16));
         let image_ref;
         let grp_dimensions = if ty == SpriteType::Sd {
             Some(self.grp_dimensions_for_sprite(sprite))
@@ -949,6 +1034,7 @@ impl Files {
             image_ref,
             path,
             grp_dimensions,
+            image_rel,
         }))
     }
 
@@ -1147,6 +1233,7 @@ impl Files {
     pub fn has_changes(&self) -> bool {
         !self.edits.is_empty() ||
             self.lit.as_ref().map(|x| x.has_changes()).unwrap_or(false) ||
+            self.images_rel.as_ref().map(|x| x.has_changes()).unwrap_or(false) ||
             self.new_entry_count.is_some()
     }
 
@@ -1284,15 +1371,38 @@ impl Files {
                     temp_files.push((out_path, sd_path.clone()));
                 }
             }
-            if let Some(ref mut lit) = self.lit() {
+            if let Some(lit) = self.lit() {
                 if lit.has_changes() {
                     let out_path = temp_file_path(&lit.path);
                     let out = fs::File::create(&out_path).with_context(|| {
                         format!("Unable to create {}", out_path.to_string_lossy())
                     })?;
                     let mut out = BufWriter::new(out);
-                    lit.write_and_set_original(&mut out)?;
+                    lit.write(&mut out)?;
                     temp_files.push((out_path, lit.path.clone()));
+                }
+            }
+            if let Some(ref mut images_rel) = self.images_rel {
+                if images_rel.has_changes() {
+                    let root = match self.root_path {
+                        Some(ref s) => s,
+                        None => return Err(anyhow!("Can't save images.rel without root path")),
+                    };
+                    let _ = fs::create_dir(root.join("SD"));
+                    // There are two images.rel files, SC:R seems to randomly select one of
+                    // them so they need to be similar in things which matter <.<
+                    // (They're not originally 100% similar)
+                    let path1 = root.join("images.rel");
+                    let path2 = root.join("SD/images.rel");
+                    for &path in &[&path1, &path2] {
+                        let out_path = temp_file_path(&path);
+                        let out = fs::File::create(&out_path).with_context(|| {
+                            format!("Unable to create {}", out_path.to_string_lossy())
+                        })?;
+                        let mut out = BufWriter::new(out);
+                        images_rel.write(&mut out)?;
+                        temp_files.push((out_path, path.clone()));
+                    }
                 }
             }
             self.open_files.clear();
@@ -1317,6 +1427,16 @@ impl Files {
         if result.is_ok() {
             self.edits.clear();
             self.new_entry_count = None;
+            if let Some(lit) = self.lit() {
+                if lit.has_changes() {
+                    lit.reset_original();
+                }
+            }
+            if let Some(ref mut images_rel) = self.images_rel {
+                if images_rel.has_changes() {
+                    images_rel.reset_original();
+                }
+            }
         }
 
         Ok(result?)
@@ -1365,6 +1485,10 @@ impl Files {
         self.lit.as_mut()
     }
 
+    pub fn images_rel(&mut self) -> Option<&mut ImagesRel> {
+        self.images_rel.as_mut()
+    }
+
     pub fn resize_entry_counts(&mut self, new_size: u16) -> Result<(), Error> {
         if let Some((_, ref mut mainsd)) = self.mainsd_anim {
             let sd_layer_names = self.sd_layer_names.as_ref()
@@ -1387,6 +1511,9 @@ impl Files {
         }
         if let Some(ref mut lit) = self.lit {
             lit.resize(new_size);
+        }
+        if let Some(ref mut rel) = self.images_rel {
+            rel.resize(new_size);
         }
         self.new_entry_count = Some(new_size);
         self.sprites = if let Some(ref root) = self.root_path {

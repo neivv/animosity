@@ -23,6 +23,7 @@ struct TextEntryInner {
 pub enum IntSize {
     Int8,
     Int16,
+    Int32,
 }
 
 fn fix_text(text: &str) -> Option<String> {
@@ -57,6 +58,7 @@ impl IntEntry {
         let max_len = match size {
             IntSize::Int8 => 3,
             IntSize::Int16 => 5,
+            IntSize::Int32 => 10,
         };
         let (entry, frame) = entry();
         entry.set_max_length(max_len);

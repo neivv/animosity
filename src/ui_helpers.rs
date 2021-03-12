@@ -75,3 +75,15 @@ pub fn pane_horizontal(first: &dyn BoxableWidget, second: &dyn BoxableWidget) ->
     pane.pack2(second.widget(), second.expands(), false);
     pane
 }
+
+pub trait WidgetExt {
+    fn tooltip(&self, tip: &str) -> &Self;
+}
+
+impl<T: IsA<gtk::Widget> + glib::object::Cast> WidgetExt for T {
+    fn tooltip(&self, tip: &str) -> &Self {
+        use gtk::WidgetExt;
+        self.set_tooltip_text(Some(tip));
+        self
+    }
+}
