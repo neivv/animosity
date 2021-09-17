@@ -40,14 +40,14 @@ fn fix_text(text: &str) -> Option<String> {
 pub fn entry() -> (gtk::Entry, gtk::Frame) {
     let entry = gtk::Entry::new();
     entry.set_has_frame(false);
-    let mut hints = entry.get_input_hints();
+    let mut hints = entry.input_hints();
     hints.remove(gtk::InputHints::EMOJI);
     hints.insert(gtk::InputHints::NO_EMOJI);
     entry.set_input_hints(hints);
     let frame = gtk::Frame::new(None);
-    <_ as gtk::WidgetExt>::set_widget_name(&frame, "entry_frame");
+    <_ as gtk::prelude::WidgetExt>::set_widget_name(&frame, "entry_frame");
     frame.add(&entry);
-    let style_ctx = frame.get_style_context();
+    let style_ctx = frame.style_context();
     let css = crate::get_css_provider();
     style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
     (entry, frame)
@@ -75,7 +75,7 @@ impl IntEntry {
     }
 
     pub fn get_value(&self) -> u32 {
-        self.entry.get_text().parse::<u32>().unwrap_or(0)
+        self.entry.text().parse::<u32>().unwrap_or(0)
     }
 
     pub fn connect_actions<A: IsA<gio::ActionMap>>(
@@ -89,17 +89,17 @@ impl IntEntry {
                 Ok(o) => o,
                 Err(_) => return Inhibit(false),
             };
-            if let Some(fix) = fix_text(&s.get_text()) {
+            if let Some(fix) = fix_text(&s.text()) {
                 s.set_text(&fix);
             }
             Inhibit(false)
         });
         this.entry.connect_key_press_event(|_s, key| {
             use gdk::keys::constants;
-            use glib::translate::ToGlib;
+            use glib::translate::IntoGlib;
 
-            let modifier = key.get_state();
-            let key = key.get_keyval();
+            let modifier = key.state();
+            let key = key.keyval();
             let acceptable = key == constants::BackSpace ||
                 key == constants::Delete ||
                 key.to_unicode()
@@ -110,7 +110,7 @@ impl IntEntry {
                 // EMIT CHANGE
                 Inhibit(false)
             } else {
-                if key.to_glib() > 65000 {
+                if key.into_glib() > 65000 {
                     return Inhibit(false);
                 }
                 Inhibit(true)
@@ -130,10 +130,10 @@ impl IntEntry {
         }
         if let Some(a) = lookup_action(actions, edit_action) {
             let t = this.clone();
-            this.entry.connect_property_text_notify(move |s| {
+            this.entry.connect_text_notify(move |s| {
                 if t.disable_edit_events.load(Ordering::Relaxed) == 0 {
-                    if let Ok(i) = s.get_text().parse::<u32>() {
-                        a.activate(Some(&i.into()));
+                    if let Ok(i) = s.text().parse::<u32>() {
+                        a.activate(Some(&i.to_variant()));
                     }
                 }
             });
@@ -164,8 +164,8 @@ impl TextEntry {
         self.0.frame.upcast_ref()
     }
 
-    pub fn get_text(&self) -> String {
-        self.0.entry.get_text().into()
+    pub fn text(&self) -> String {
+        self.0.entry.text().into()
     }
 
     pub fn set_text(&self, text: &str) {

@@ -117,7 +117,7 @@ pub fn dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
     ]);
     window.add(&bx);
     window.set_border_width(10);
-    window.set_property_default_width(350);
+    window.set_default_width(350);
     window.set_title("Edit sprite count");
     window.set_modal(true);
     window.set_transient_for(Some(parent));

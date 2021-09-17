@@ -109,8 +109,7 @@ fn main() {
     }
     let _ = init_log();
     let name = format!("animosity.pid_{}", std::process::id());
-    let app = gtk::Application::new(Some(&*name), gio::ApplicationFlags::empty())
-        .unwrap_or_else(|e| panic!("Couldn't create app: {}", e));
+    let app = gtk::Application::new(Some(&*name), gio::ApplicationFlags::HANDLES_COMMAND_LINE);
     app.connect_startup(|app| {
         let ui = create_ui(app);
         create_actions(app, &ui.main_window.clone().upcast());
@@ -125,7 +124,7 @@ fn main() {
     });
     app.connect_activate(|_| {
     });
-    app.run(&[]);
+    app.run();
 }
 
 struct State {
@@ -193,7 +192,7 @@ struct ScrolledList {
 
 impl ScrolledList {
     fn new() -> ScrolledList {
-        let store = gtk::ListStore::new(&[glib::Type::String]);
+        let store = gtk::ListStore::new(&[glib::Type::STRING]);
         let list = gtk::TreeView::with_model(&store);
         let col = gtk::TreeViewColumn::new();
         let renderer = gtk::CellRendererText::new();
@@ -244,9 +243,9 @@ impl SpriteList {
 
         let info = linked_info.clone();
         list.list.connect_cursor_changed(move |s| {
-            let sprite = s.get_selection().get_selected()
-                .and_then(|(model, iter)| model.get_path(&iter))
-                .and_then(|path| path.get_indices().get(0).cloned());
+            let sprite = s.selection().selected()
+                .and_then(|(model, iter)| model.path(&iter))
+                .and_then(|path| path.indices().get(0).cloned());
             if let Some(index) = sprite {
                 info.select_sprite(index as usize);
             }
@@ -357,8 +356,8 @@ impl SpriteValues {
             let check = self.ref_enable.clone();
             let i = self.ref_index.clone();
             let d = disable_check.clone();
-            a.connect_property_enabled_notify(move |s| {
-                let enabled = s.get_enabled();
+            a.connect_enabled_notify(move |s| {
+                let enabled = s.is_enabled();
                 check.set_sensitive(enabled);
                 i.frame.set_sensitive(enabled);
                 if !enabled {
@@ -375,7 +374,7 @@ impl SpriteValues {
             let disable_check = disable_check.clone();
             a.connect_activate(move |_, param| {
                 if let Some(enabled) = param.as_ref().and_then(|x| x.get::<bool>()) {
-                    if check.get_active() != enabled {
+                    if check.is_active() != enabled {
                         disable_check.set(true);
                         check.set_active(enabled);
                         disable_check.set(false);
@@ -392,7 +391,7 @@ impl SpriteValues {
         if let Some(a) = lookup_action(sprite_actions, "edit_enable_ref") {
             self.ref_enable.connect_toggled(move |s| {
                 if disable_check.get() == false {
-                    let enabled: bool = s.get_active();
+                    let enabled: bool = s.is_active();
                     let variant = enabled.to_variant();
                     a.activate(Some(&variant));
                 }
@@ -441,7 +440,7 @@ impl SpriteValues {
         let l = self.texture_dimensions.clone();
         if let Some(a) = lookup_action(sprite_actions, "texture_size") {
             a.connect_activate(move |_, param| {
-                if let Some(text) = param.as_ref().and_then(|x| x.get_str()) {
+                if let Some(text) = param.as_ref().and_then(|x| x.str()) {
                     l.set_text(&format!("Texture size: {}", text));
                 }
             });
@@ -487,9 +486,9 @@ impl SpriteSelector {
         list.root.set_min_content_height(200);
         list.root.set_min_content_width(80);
         list.list.connect_cursor_changed(move |s| {
-            let index = s.get_selection().get_selected()
-                .and_then(|(model, iter)| model.get_path(&iter))
-                .and_then(|path| path.get_indices().get(0).cloned());
+            let index = s.selection().selected()
+                .and_then(|(model, iter)| model.path(&iter))
+                .and_then(|path| path.indices().get(0).cloned());
             if let Some(index) = index {
                 let variant = (index as u32).to_variant();
                 sprite_actions.activate_action("select_layer", Some(&variant));
@@ -563,12 +562,11 @@ impl SpriteInfo {
         // vertically ;_;
         let light2 = lighting.clone();
         let expander_toggled = Rc::new(move |expander: &gtk::Expander, grow| {
-            use gdk::WindowExt;
-            let (_, size) = light2.widget().get_preferred_size();
-            let (_, expander_width) = expander.get_preferred_width();
-            if let Some(window) = expander.get_window() {
-                let width = window.get_width();
-                let height = window.get_height();
+            let (_, size) = light2.widget().preferred_size();
+            let (_, expander_width) = expander.preferred_width();
+            if let Some(window) = expander.window() {
+                let width = window.width();
+                let height = window.height();
                 let new_w = if grow {
                     width + (size.width - expander_width).max(0)
                 } else {
@@ -580,14 +578,14 @@ impl SpriteInfo {
         let expander_toggled2 = expander_toggled.clone();
         expander.connect_activate(move |expander| {
             // This is ran before the state changes from activation
-            if expander.get_expanded() {
+            if expander.is_expanded() {
                 return;
             }
             expander_toggled2(expander, true);
         });
-        expander.connect_property_expanded_notify(move |expander| {
+        expander.connect_expanded_notify(move |expander| {
             // This is ran after state change
-            if expander.get_expanded() {
+            if expander.is_expanded() {
                 return;
             }
             expander_toggled(expander, false);
@@ -626,7 +624,7 @@ impl SpriteInfo {
         let gl: Rc<RefCell<Option<RenderState>>> = Rc::new(RefCell::new(None));
         draw_area.connect_draw(move |s, cairo| {
             let mut gl = gl.borrow_mut();
-            let rect = s.get_allocation();
+            let rect = s.allocation();
             let render_state = gl.get_or_insert_with(|| {
                 RenderState::new(rect.width as u32, rect.height as u32)
             });
@@ -646,16 +644,21 @@ impl SpriteInfo {
             match result {
                 Ok(()) => {
                     let (data, width, height) = render_state.framebuf_bytes();
-                    let surface = cairo::ImageSurface::create_for_data(
+                    let result = cairo::ImageSurface::create_for_data(
                         data.into_boxed_slice(),
                         cairo::Format::ARgb32,
                         width as i32,
                         height as i32,
                         width as i32 * 4,
-                    ).expect("Couldn't create cairo image surface");
-                    // Could recycle the surface?
-                    cairo.set_source_surface(&surface, 0.0, 0.0);
-                    cairo.paint();
+                    ).and_then(|surface| {
+                        // Could recycle the surface?
+                        cairo.set_source_surface(&surface, 0.0, 0.0)
+                    }).and_then(|_| {
+                        cairo.paint()
+                    });
+                    if let Err(e) = result {
+                        println!("Cairo error {}", e);
+                    }
                 }
                 Err(e) => {
                     cairo.set_source_rgb(0.0, 0.0, 0.0);
@@ -663,7 +666,9 @@ impl SpriteInfo {
                     let text = format!("{:?}", e);
                     for (i, line) in text.lines().enumerate() {
                         cairo.move_to(0.0, 20.0 + 20.0 * i as f64);
-                        cairo.show_text(&line);
+                        if let Err(e) = cairo.show_text(&line) {
+                            println!("Cairo error {}", e);
+                        }
                     }
                 }
             }
@@ -1489,12 +1494,12 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     //dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
     let result: gtk::ResponseType = dialog.run().into();
     let result = if result == gtk::ResponseType::Accept {
-        if let Some(path) = dialog.get_filename() {
+        if let Some(path) = dialog.filename() {
             if let Some(parent) = path.parent() {
                 select_dir::set_config_entry("open_file", &parent.to_string_lossy());
             }
         }
-        dialog.get_filename()
+        dialog.filename()
     } else {
         None
     };
@@ -1515,7 +1520,7 @@ fn init_css_provider() -> gtk::CssProvider {
         css.connect_parsing_error(move |_, _, e| {
             errs.borrow_mut().push(e.to_string());
         });
-        let file = gio::File::new_for_path("animosity.css");
+        let file = gio::File::for_path("animosity.css");
         let _ = css.load_from_file(&file);
         let mut errors = errors.borrow_mut();
         if !errors.is_empty() {
@@ -1556,7 +1561,7 @@ fn create_ui(app: &gtk::Application) -> Ui {
     window.set_title(&title(None, false));
     window.resize(800, 600);
 
-    let style_ctx = window.get_style_context();
+    let style_ctx = window.style_context();
     let css = crate::get_css_provider();
     style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
 
@@ -1570,10 +1575,10 @@ fn create_ui(app: &gtk::Application) -> Ui {
 
 fn label_section<O: IsA<gtk::Widget>>(name: &str, obj: &O) -> gtk::Box {
     let frame = gtk::Frame::new(Some(name));
-    obj.set_margin_top(obj.get_margin_top() + 2);
-    obj.set_margin_bottom(obj.get_margin_bottom() + 2);
-    obj.set_margin_start(obj.get_margin_start() + 2);
-    obj.set_margin_end(obj.get_margin_end() + 2);
+    obj.set_margin_top(obj.margin_top() + 2);
+    obj.set_margin_bottom(obj.margin_bottom() + 2);
+    obj.set_margin_start(obj.margin_start() + 2);
+    obj.set_margin_end(obj.margin_end() + 2);
     frame.add(obj);
     let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
     bx.pack_start(&frame, false, false, 0);

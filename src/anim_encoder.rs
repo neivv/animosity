@@ -470,14 +470,6 @@ fn encode_dxt5(
             }
             (&mut in_buf, width_aligned, height_aligned)
         };
-        // squish appears to have some bug with color encoding if red/blue values of
-        // a block are all equal. Add some variation to red by setting/clearing alternating
-        // least significant bits.
-        // (This makes a major difference in ao_depth importing since it's just green + alpha)
-        for pixel in in_data.chunks_exact_mut(8) {
-            pixel[0] |= 1;
-            pixel[4] &= !1;
-        }
         squish::Format::Bc3.compress(
             in_data,
             in_width as usize,

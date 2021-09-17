@@ -29,8 +29,8 @@ impl<E: Copy + Clone + Eq + PartialEq + 'static> ComboBoxEnum<E> {
         }
     }
 
-    pub fn get_active(&self) -> Option<E> {
-        self.combo_box.get_active().and_then(|x| self.cases.get(x as usize)).map(|x| x.0)
+    pub fn active(&self) -> Option<E> {
+        self.combo_box.active().and_then(|x| self.cases.get(x as usize)).map(|x| x.0)
     }
 
     pub fn widget(&self) -> &gtk::Widget {
@@ -44,7 +44,7 @@ impl<E: Copy + Clone + Eq + PartialEq + 'static> ComboBoxEnum<E> {
     pub fn connect_changed<F: Fn(Option<E>) + 'static>(&self, cb: F) {
         let this = self.clone();
         self.combo_box.connect_changed(move |_| {
-            cb(this.get_active())
+            cb(this.active())
         });
     }
 }

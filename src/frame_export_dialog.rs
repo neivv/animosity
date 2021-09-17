@@ -114,7 +114,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
 
                 let e = entry.clone();
                 checkbox.connect_toggled(move |s| {
-                    e.widget().set_sensitive(s.get_active());
+                    e.widget().set_sensitive(s.is_active());
                 });
 
                 (checkbox, label, entry)
@@ -149,9 +149,9 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
                     let check2 = check.clone();
                     let checkboxes2 = checkboxes.clone();
                     check.connect_toggled(move || {
-                        checkboxes_update_normal(&checkboxes2, check2.get_active(), layer_id);
+                        checkboxes_update_normal(&checkboxes2, check2.is_active(), layer_id);
                     });
-                    checkboxes_update_normal(&checkboxes, check.get_active(), layer_id);
+                    checkboxes_update_normal(&checkboxes, check.is_active(), layer_id);
                 } else if name == "ao_depth" {
                     let (checkbox, label, entry) =
                         make_checkbox(&prefix_prefix, "ao", true);
@@ -197,12 +197,12 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
                     let check2 = check.clone();
                     let checkboxes2 = checkboxes.clone();
                     check.connect_toggled(move || {
-                        checkboxes_update_ao_depth(&checkboxes2, check2.get_active(), layer_id);
+                        checkboxes_update_ao_depth(&checkboxes2, check2.is_active(), layer_id);
                     });
                     let check2 = check.clone();
                     let checkboxes2 = checkboxes.clone();
                     grid.connect_map(move |_| {
-                        checkboxes_update_ao_depth(&checkboxes2, check2.get_active(), layer_id);
+                        checkboxes_update_ao_depth(&checkboxes2, check2.is_active(), layer_id);
                     });
                 }
             }
@@ -269,7 +269,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
             _ => return,
         };
 
-        let framedef: PathBuf = String::from(framedef_entry.get_text()).into();
+        let framedef: PathBuf = String::from(framedef_entry.text()).into();
         let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
         let files_arc = s.files.clone();
         let frame_count;
@@ -279,10 +279,10 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
                 .borrow()
                 .iter()
                 .filter_map(|layer| {
-                    if !layer.check.get_active() || !layer.check.is_visible() {
+                    if !layer.check.is_active() || !layer.check.is_visible() {
                         return None;
                     }
-                    let prefix = layer.entry.get_text();
+                    let prefix = layer.entry.text();
                     Some(frame_export::ExportLayer {
                         prefix,
                         id: layer.layer,
@@ -293,7 +293,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
                 .collect::<Vec<_>>();
             frame_count = layers_to_export.len() *
                 file.frames().map(|x| x.len()).unwrap_or(0);
-            let single_image = single_image_check2.get_active();
+            let single_image = single_image_check2.is_active();
             std::thread::spawn(move || {
                 let send2 = send.clone();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -318,10 +318,10 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
             });
         } else {
             let prefix = grp_prefix.as_ref()
-                .map(|x| x.get_text().into())
+                .map(|x| x.text().into())
                 .unwrap_or_else(String::new);
             frame_count = file.layer_count();
-            let single_image = single_image_check2.get_active();
+            let single_image = single_image_check2.is_active();
             std::thread::spawn(move || {
                 let send2 = send.clone();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -399,7 +399,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
     *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
     window.add(&bx);
     window.set_border_width(10);
-    window.set_property_default_width(350);
+    window.set_default_width(350);
     if is_anim {
         window.set_title(&format!("Export frames of {:?} image {}", tex_id.1, tex_id.0));
     } else {
@@ -438,7 +438,7 @@ impl SavedCheckbox {
             check.set_active(false);
         }
         check.connect_toggled(move |check| {
-            let state = match check.get_active() {
+            let state = match check.is_active() {
                 true => "y",
                 false => "n",
             };
@@ -453,8 +453,8 @@ impl SavedCheckbox {
         self.check.upcast_ref()
     }
 
-    pub fn get_active(&self) -> bool {
-        self.check.get_active()
+    pub fn is_active(&self) -> bool {
+        self.check.is_active()
     }
 
     pub fn connect_toggled<F: Fn() + 'static>(&self, func: F) {

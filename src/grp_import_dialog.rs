@@ -153,7 +153,7 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
         }
         let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
         let files_arc = sprite_info.files.clone();
-        let format = match format_combo_box.get_active() {
+        let format = match format_combo_box.active() {
             Some(o) => o,
             None => {
                 error_msg_box(&w, "Format not specified");
@@ -168,7 +168,7 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
                 return;
             }
         };
-        let mut palette: Vec<u8> = match palette_combo_box2.get_active() {
+        let mut palette: Vec<u8> = match palette_combo_box2.active() {
             Some(Some(palette)) => palette.0.into(),
             Some(None) => {
                 let path = custom_palette_select2.text();
@@ -210,7 +210,7 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
                 }
             };
             let use_teamcolor = teamcolor_check2.as_ref()
-                .map(|x| x.get_active())
+                .map(|x| x.is_active())
                 .unwrap_or(false);
             std::thread::spawn(move || {
                 let send2 = send.clone();
@@ -318,7 +318,7 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
     *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
     window.add(&bx);
     window.set_border_width(10);
-    window.set_property_default_width(350);
+    window.set_default_width(350);
     if is_anim {
         window.set_title(&format!("Import GRP to {:?} image {}", tex_id.1, tex_id.0));
     } else {
@@ -341,7 +341,7 @@ fn update_ok_sensitive(
     palette_combo_box: &ComboBoxEnum<Option<Palette>>,
 ) {
     let has_grp = grp_select.text().is_empty() == false;
-    let has_palette = palette_combo_box.get_active().is_some() ||
+    let has_palette = palette_combo_box.active().is_some() ||
         custom_palette_select.text().is_empty() == false;
     ok.set_sensitive(has_grp && has_palette);
 }

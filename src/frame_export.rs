@@ -110,7 +110,7 @@ pub fn export_frames<F: Fn(f32)>(
             }
 
             let mut encoder = png::Encoder::new(out, image_width, image_height);
-            encoder.set_color(png::ColorType::RGBA);
+            encoder.set_color(png::ColorType::Rgba);
             let mut encoder = encoder.write_header()?;
             encoder.write_image_data(&bytes)?;
 
@@ -270,7 +270,7 @@ fn write_frame(
     );
 
     let mut encoder = png::Encoder::new(out, out_width, out_height);
-    encoder.set_color(png::ColorType::RGBA);
+    encoder.set_color(png::ColorType::Rgba);
     let mut encoder = encoder.write_header()?;
     encoder.write_image_data(&bytes)?;
     Ok(())
@@ -362,7 +362,7 @@ pub fn export_grp<F: Fn(f32)>(
             encoder.set_color(png::ColorType::Indexed);
             encoder.set_palette(rgba_to_rgb(palette));
         } else {
-            encoder.set_color(png::ColorType::RGBA);
+            encoder.set_color(png::ColorType::Rgba);
         }
         let mut encoder = encoder.write_header()?;
         encoder.write_image_data(&bytes)?;
@@ -393,7 +393,7 @@ pub fn export_grp<F: Fn(f32)>(
                 encoder.set_palette(rgba_to_rgb(palette));
                 encoder.set_depth(png::BitDepth::Eight);
             } else {
-                encoder.set_color(png::ColorType::RGBA);
+                encoder.set_color(png::ColorType::Rgba);
             }
             let mut encoder = encoder.write_header()?;
             encoder.write_image_data(&texture.data)?;

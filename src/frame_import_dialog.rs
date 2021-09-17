@@ -246,14 +246,14 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         ]);
         let filename_entry2 = filename_entry.clone();
         no_grp.connect_toggled(move |this| {
-            if this.get_active() {
+            if this.is_active() {
                 filename_entry2.set_sensitive(false);
                 filename_entry2.set_text("");
             }
         });
         let filename_entry2 = filename_entry.clone();
         default_name.connect_toggled(move |this| {
-            if this.get_active() {
+            if this.is_active() {
                 filename_entry2.set_sensitive(false);
                 if let Some(ref path) = default_grp_path {
                     filename_entry2.set_text(path);
@@ -262,7 +262,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         });
         let filename_entry2 = filename_entry.clone();
         custom_name.connect_toggled(move |this| {
-            if this.get_active() {
+            if this.is_active() {
                 filename_entry2.set_sensitive(true);
                 let name = read_config_entry("sd_grp_custom_name")
                     .unwrap_or_else(|| "something.grp".into());
@@ -343,10 +343,10 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         let files_arc = sprite_info.files.clone();
         if is_anim {
             let formats = checkboxes2.iter().map(|x| {
-                Ok(match x.1.get_active() {
+                Ok(match x.1.active() {
                     Some(x) => x,
                     None => {
-                        if x.0.get_active() {
+                        if x.0.is_active() {
                             return Err(());
                         }
                         // Just a dummy value since the layer is unused
@@ -362,7 +362,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 }
             };
             let hd2_fi = (*hd2_fi.borrow()).clone();
-            let frame_scale = match framedef_scale.get_active() {
+            let frame_scale = match framedef_scale.active() {
                 Some(s) => s.to_float(),
                 None => {
                     error_msg_box(&w, "Scale not set");
@@ -370,7 +370,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 }
             };
             let hd2_scale = if hd2_fi.is_some() {
-                match hd2_scale.get_active() {
+                match hd2_scale.active() {
                     Some(s) => Some(s.to_float()),
                     None => {
                         error_msg_box(&w, "HD2 Scale not set");
@@ -412,12 +412,12 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 frame_info
             };
 
-            let active_grp_radio_index = sd_anim_grp_radios.iter().position(|x| x.get_active());
+            let active_grp_radio_index = sd_anim_grp_radios.iter().position(|x| x.is_active());
             let grp_filename = if let Some(index) = active_grp_radio_index {
                 set_config_entry("sd_grp_last_selected", &index.to_string());
                 if index == 2 {
                     if let Some(ref entry) = sd_anim_grp_filename {
-                        set_config_entry("sd_grp_custom_name", &entry.get_text());
+                        set_config_entry("sd_grp_custom_name", &entry.text());
                     }
                 }
                 if index == 0 {
@@ -425,7 +425,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 } else {
                     sd_anim_grp_filename.as_ref()
                         .and_then(|entry| {
-                            let text = entry.get_text();
+                            let text = entry.text();
                             Some(files_root.as_ref()?.join(&*text))
                         })
                 }
@@ -457,7 +457,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             });
         } else {
             let format = match grp_format {
-                Some(ref s) => s.get_active(),
+                Some(ref s) => s.active(),
                 None => return,
             };
             let format = match format {
@@ -468,7 +468,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                 }
             };
             let scale = grp_scale_entry.as_ref().unwrap().get_value() as u8;
-            let frame_scale = match framedef_scale.get_active() {
+            let frame_scale = match framedef_scale.active() {
                 Some(s) => s.to_float(),
                 None => {
                     error_msg_box(&w, "Scale not set");
@@ -477,7 +477,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
             };
             let make_linked_grp = ddsgrp_make_linked_grp2
                 .as_ref()
-                .map(|x| x.get_active())
+                .map(|x| x.is_active())
                 .unwrap_or(false);
             let linked_grp_path = match make_linked_grp {
                 true => ddsgrp_linked_grp.clone(),
@@ -643,7 +643,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
     window.add(&bx);
     window.set_border_width(10);
-    window.set_property_default_width(350);
+    window.set_default_width(350);
     if is_anim {
         window.set_title(&format!("Import frames for {:?} image {}", tex_id.1, tex_id.0));
     } else {
@@ -729,8 +729,8 @@ impl ScaleChooser {
         self.bx.upcast_ref()
     }
 
-    fn get_active(&self) -> Option<ScaleValue> {
-        self.combo_box.get_active()
+    fn active(&self) -> Option<ScaleValue> {
+        self.combo_box.active()
     }
 }
 

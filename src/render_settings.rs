@@ -68,7 +68,7 @@ impl RenderSettingsWidget {
         });
         let this2 = this.clone();
         normal_decode.connect_toggled(move |s| {
-            this2.settings.borrow_mut().decode_normal = s.get_active();
+            this2.settings.borrow_mut().decode_normal = s.is_active();
             crate::ui().info.draw_area.queue_draw();
         });
 

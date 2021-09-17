@@ -16,32 +16,34 @@ lto = true
 
 [dependencies]
 anyhow = "1.0"
-app_dirs = "1.2.1"
 byteorder = "1.2"
 cgmath = "0.18"
 ddsfile = "0.4"
 fern = "0.6"
 fxhash = "0.2"
-glium = "0.29"
+glium = "0.30"
 image = { version = "0.23", features = ["png"], default-features = false }
 log = "0.4"
 once_cell = "1.4"
 parking_lot = "0.11"
-png = "0.16"
+png = "0.17"
 quick-error = "2.0"
 rayon = "1.3"
-serde = "1.0.37"    
+serde = "1.0.37"
 serde_derive = "1.0.37"
 serde_json = "1.0.13"
 thread_local = "1.0"
-thread-id = "3.3"
+thread-id = "4.0"
 
-cairo-rs = "0.9"
-gtk = { version = "0.9", features = ["v3_22_20"] }
-gdk = "0.13"
-gio = "0.9"
-glib = "0.10"
+app_dirs = { package = "app_dirs2", version = "2.3.2" }
 
-# Not popular (known, widely used) so more skeptical but at least 1.0.0 is good
-# Also port of a C++ library so likely not updated
-squish = "=1.0.0"
+cairo-rs = "0.14"
+gtk = { version = "0.14", features = ["v3_22_20"] }
+gdk = "0.14"
+gio = "0.14"
+glib = "0.14"
+
+# Should keep eye out for crates.io update
+[dependencies.squish]
+git = "https://github.com/jansol/squish-rs.git"
+rev = "f93f58e9b36ba8b04468dac24fabfa331b4f4fe3"

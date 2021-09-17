@@ -31,7 +31,7 @@ impl SpriteLighting {
         use crate::ui_helpers::*;
 
         let enabled = gtk::CheckButton::with_label("Enabled");
-        let columns = &[Type::U32, Type::String, Type::I32, Type::I32, Type::U32, Type::U32];
+        let columns = &[Type::U32, Type::STRING, Type::I32, Type::I32, Type::U32, Type::U32];
         let store = gtk::ListStore::new(columns);
         let tree = gtk::TreeView::with_model(&store);
         for i in 0..6 {
@@ -54,13 +54,13 @@ impl SpriteLighting {
                 5 | _ => "Radius",
             });
             if i == 0 {
-                renderer.set_property_editable(false);
+                renderer.set_editable(false);
             } else {
-                renderer.set_property_editable(true);
+                renderer.set_editable(true);
             }
             let store2 = store.clone();
             renderer.connect_edited(move |_, path, value| {
-                if let Some(iter) = store2.get_iter(&path) {
+                if let Some(iter) = store2.iter(&path) {
                     let value = match i {
                         1 => {
                             if rgb_color_from_string(value).is_none() {
@@ -90,13 +90,13 @@ impl SpriteLighting {
         }
         tree.set_fixed_height_mode(true);
         tree.set_activate_on_single_click(true);
-        tree.get_selection().set_mode(gtk::SelectionMode::Multiple);
+        tree.selection().set_mode(gtk::SelectionMode::Multiple);
         let none: Option<&gtk::Adjustment> = None;
         let tree_scroll = gtk::ScrolledWindow::new(none, none);
         tree_scroll.add(&tree);
         tree_scroll.set_overlay_scrolling(false);
-        tree_scroll.set_property_vscrollbar_policy(gtk::PolicyType::Always);
-        tree_scroll.set_property_hscrollbar_policy(gtk::PolicyType::Never);
+        tree_scroll.set_vscrollbar_policy(gtk::PolicyType::Always);
+        tree_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
         tree_scroll.set_propagate_natural_width(true);
         tree_scroll.set_propagate_natural_height(true);
         tree_scroll.set_min_content_height(100);
@@ -122,7 +122,7 @@ impl SpriteLighting {
             if this.listening_input.load(Ordering::Relaxed) == false {
                 return;
             }
-            this.enable_for_current(check.get_active());
+            this.enable_for_current(check.is_active());
         });
         let this = result.clone();
         result.store.connect_row_changed(move |store, path, iter| {
@@ -131,7 +131,7 @@ impl SpriteLighting {
             }
             || -> Option<()> {
                 let dirty;
-                let &frame_id = path.get_indices().get(0)?;
+                let &frame_id = path.indices().get(0)?;
                 let frame = lit_frame_from_store_iter(&store, &iter)?;
                 {
                     let mut files = this.files.lock();
@@ -152,8 +152,8 @@ impl SpriteLighting {
             if this.listening_input.load(Ordering::Relaxed) == false {
                 return Inhibit(false);
             }
-            if event.get_state().intersects(gdk::ModifierType::CONTROL_MASK) {
-                match event.get_keyval() {
+            if event.state().intersects(gdk::ModifierType::CONTROL_MASK) {
+                match event.keyval() {
                     gdk::keys::constants::c => {
                         this.copy_row();
                         return Inhibit(true);
@@ -170,7 +170,7 @@ impl SpriteLighting {
         let this = result.clone();
         result.tree.connect_button_release_event(move |_, event| {
             // Rclick
-            if event.get_button() == 3 {
+            if event.button() == 3 {
                 let menu = this.clone().make_rclick_menu();
                 menu.popup_at_pointer(Some(event));
                 Inhibit(true)
@@ -193,10 +193,10 @@ impl SpriteLighting {
     fn copy_row(&self) {
         use std::fmt::Write;
         let mut result = String::new();
-        let frames = self.tree.get_selection()
-            .get_selected_rows().0
+        let frames = self.tree.selection()
+            .selected_rows().0
             .into_iter()
-            .filter_map(|path| self.store.get_iter(&path))
+            .filter_map(|path| self.store.iter(&path))
             .filter_map(|iter| lit_frame_from_store_iter(&self.store, &iter));
         for f in frames {
             writeln!(result, "{}, {}, {}, {}, {}", f.x, f.y, f.color, f.intensity, f.radius)
@@ -214,26 +214,26 @@ impl SpriteLighting {
             Some(s) => s,
             None => return,
         };
-        let rows = self.tree.get_selection().get_selected_rows().0;
+        let rows = self.tree.selection().selected_rows().0;
         if rows.len() == 0 {
             return;
         }
         if rows.len() == 1 {
             // Paste starting from current row
-            let index = match rows.get(0).and_then(|path| path.get_indices().get(0).cloned()) {
+            let index = match rows.get(0).and_then(|path| path.indices().get(0).cloned()) {
                 Some(s) => s,
                 None => return,
             };
             for (frame, index) in frames.iter().zip(index..) {
                 let path = gtk::TreePath::from_indicesv(&[index]);
-                if let Some(iter) = self.store.get_iter(&path) {
+                if let Some(iter) = self.store.iter(&path) {
                     set_lit_frame_in_store(&self.store, &iter, frame);
                 }
             }
         } else {
             // Paste over any selected rows
             for (frame, path) in frames.iter().zip(rows.iter()) {
-                if let Some(iter) = self.store.get_iter(path) {
+                if let Some(iter) = self.store.iter(path) {
                     set_lit_frame_in_store(&self.store, &iter, frame);
                 }
             }
@@ -393,12 +393,12 @@ fn lit_frame_from_store_iter(
     store: &gtk::ListStore,
     iter: &gtk::TreeIter,
 ) -> Option<anim_lit::Frame> {
-    let color = store.get_value(iter, 1).get::<String>().ok()??;
+    let color = store.value(iter, 1).get::<String>().ok()?;
     let color = rgb_color_from_string(&color)?;
-    let x = store.get_value(iter, 2).get::<i32>().ok()??;
-    let y = store.get_value(iter, 3).get::<i32>().ok()??;
-    let intensity = store.get_value(iter, 4).get::<u32>().ok()??;
-    let radius = store.get_value(iter, 5).get::<u32>().ok()??;
+    let x = store.value(iter, 2).get::<i32>().ok()?;
+    let y = store.value(iter, 3).get::<i32>().ok()?;
+    let intensity = store.value(iter, 4).get::<u32>().ok()?;
+    let radius = store.value(iter, 5).get::<u32>().ok()?;
     Some(anim_lit::Frame {
         x,
         y,
@@ -442,93 +442,81 @@ fn rgb_color_from_string(mut text: &str) -> Option<u32> {
 mod gtk_ext {
     use gtk::subclass::{prelude::*};
     use gtk::prelude::*;
-    use glib::translate::*;
-    use glib::{glib_object_subclass, glib_object_impl, glib_wrapper};
 
+    #[derive(Default)]
     pub struct CellRendererColorC {
     }
 
+    #[glib::object_subclass]
     impl ObjectSubclass for CellRendererColorC {
         const NAME: &'static str = "anim_CellRendererColor";
+        type Type = CellRendererColor;
         type ParentType = gtk::CellRendererText;
-        type Instance = glib::subclass::simple::InstanceStruct<Self>;
-        type Class = glib::subclass::simple::ClassStruct<Self>;
-
-        glib_object_subclass!();
-
-        fn new() -> Self {
-            Self {
-            }
-        }
     }
 
     impl ObjectImpl for CellRendererColorC {
-        glib_object_impl!();
     }
 
     impl CellRendererImpl for CellRendererColorC {
-        fn get_preferred_width<P: IsA<gtk::Widget>>(
+        fn preferred_width<P: IsA<gtk::Widget>>(
             &self,
-            renderer: &gtk::CellRenderer,
+            renderer: &CellRendererColor,
             widget: &P,
         ) -> (i32, i32) {
-            let (min, natural) = self.parent_get_preferred_width(renderer, widget);
-            let (_, natural_h) =
-                self.parent_get_preferred_height_for_width(renderer, widget, natural);
+            let (min, natural) = self.parent_preferred_width(renderer, widget);
+            let (_, natural_h) = self.parent_preferred_height_for_width(renderer, widget, natural);
             let color_block_size = natural_h;
             (min + color_block_size, natural + color_block_size)
         }
 
         fn render<P: glib::IsA<gtk::Widget>>(
             &self,
-            renderer: &gtk::CellRenderer,
+            renderer: &CellRendererColor,
             cr: &cairo::Context,
             widget: &P,
             background_area: &gdk::Rectangle,
             cell_area: &gdk::Rectangle,
             flags: gtk::CellRendererState,
         ) {
-            let renderer_text = match renderer.downcast_ref::<gtk::CellRendererText>() {
-                Some(s) => s,
-                None => {
-                    warn!("CellRenderer couldn't be downcast to CellRendererText??");
-                    return;
-                }
-            };
-            let text = match renderer_text.get_property_text() {
+            let text = match renderer.text() {
                 Some(s) => s,
                 None => return,
             };
             let color_block_size = cell_area.height;
             let text_width = cell_area.width - color_block_size;
             if let Some(color) = super::rgb_color_from_string(text.as_str()) {
-                let (x_padding, y_padding) = renderer.get_padding();
-                cr.save();
-                cr.new_path();
-                cr.set_line_width(1.0);
-                cr.set_source_rgb(0.0, 0.0, 0.0);
-                cr.rectangle(
-                    (cell_area.x + text_width + x_padding) as f64,
-                    (cell_area.y + y_padding) as f64,
-                    (color_block_size - x_padding * 2) as f64,
-                    (color_block_size - y_padding * 2) as f64,
-                );
-                cr.stroke();
-                cr.new_path();
-                cr.set_line_width(1.0);
-                cr.set_source_rgb(
-                    (color & 0xff) as f64 / 255.0,
-                    ((color >> 8) & 0xff) as f64 / 255.0,
-                    ((color >> 16) & 0xff) as f64 / 255.0,
-                );
-                cr.rectangle(
-                    (cell_area.x + text_width + x_padding) as f64 + 1.0,
-                    (cell_area.y + y_padding) as f64 + 1.0,
-                    (color_block_size - x_padding * 2) as f64 - 2.0,
-                    (color_block_size - y_padding * 2) as f64 - 2.0,
-                );
-                cr.fill();
-                cr.restore();
+                let (x_padding, y_padding) = renderer.padding();
+                let result = cr.save()
+                    .and_then(|()| {
+                        cr.new_path();
+                        cr.set_line_width(1.0);
+                        cr.set_source_rgb(0.0, 0.0, 0.0);
+                        cr.rectangle(
+                            (cell_area.x + text_width + x_padding) as f64,
+                            (cell_area.y + y_padding) as f64,
+                            (color_block_size - x_padding * 2) as f64,
+                            (color_block_size - y_padding * 2) as f64,
+                        );
+                        cr.stroke()?;
+                        cr.new_path();
+                        cr.set_line_width(1.0);
+                        cr.set_source_rgb(
+                            (color & 0xff) as f64 / 255.0,
+                            ((color >> 8) & 0xff) as f64 / 255.0,
+                            ((color >> 16) & 0xff) as f64 / 255.0,
+                        );
+                        cr.rectangle(
+                            (cell_area.x + text_width + x_padding) as f64 + 1.0,
+                            (cell_area.y + y_padding) as f64 + 1.0,
+                            (color_block_size - x_padding * 2) as f64 - 2.0,
+                            (color_block_size - y_padding * 2) as f64 - 2.0,
+                        );
+                        cr.fill()?;
+                        cr.restore()
+                    });
+                if let Err(e) = result {
+                    println!("Cairo error {}", e);
+                }
             }
             let text_area = gdk::Rectangle {
                 x: cell_area.x,
@@ -543,25 +531,14 @@ mod gtk_ext {
     impl CellRendererTextImpl for CellRendererColorC {
     }
 
-    glib_wrapper! {
-        pub struct CellRendererColor(
-            Object<
-                glib::subclass::simple::InstanceStruct<CellRendererColorC>,
-                glib::subclass::simple::ClassStruct<CellRendererColorC>,
-                CellRendererColorClass
-            >)
+    glib::wrapper! {
+        pub struct CellRendererColor(ObjectSubclass<CellRendererColorC>)
             @extends gtk::CellRendererText, gtk::CellRenderer;
-
-        match fn {
-            get_type => || CellRendererColorC::get_type().to_glib(),
-        }
     }
 
     impl CellRendererColor {
         pub fn new() -> CellRendererColor {
-            glib::Object::new(Self::static_type(), &[])
-                .expect("Failed to create CellRendererColor")
-                .downcast()
+            glib::Object::new(&[])
                 .expect("Failed to create CellRendererColor")
         }
     }

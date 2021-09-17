@@ -96,7 +96,7 @@ impl SelectDir {
         let e = entry.clone();
         let w = window.clone();
         button.connect_clicked(move |_| {
-            let dir = e.get_text();
+            let dir = e.text();
             if let Some(path) = choose_dir_dialog(&w, &dir) {
                 let val = path.to_string_lossy();
                 e.set_text(&val);
@@ -116,7 +116,7 @@ impl SelectDir {
     }
 
     pub fn text(&self) -> String {
-        self.entry.get_text().into()
+        self.entry.text().into()
     }
 }
 
@@ -141,7 +141,7 @@ impl SelectFile {
         let w = window.clone();
         let o = on_change_handlers.clone();
         button.connect_clicked(move |_| {
-            let dir = e.get_text();
+            let dir = e.text();
             let dir = Path::new(&*dir).parent().map(|x| x.to_string_lossy().into_owned());
             if let Some(path) = choose_file_dialog(&w, &dir, filter_name, filter_pattern) {
                 let val = path.to_string_lossy();
@@ -167,7 +167,7 @@ impl SelectFile {
     }
 
     pub fn text(&self) -> String {
-        self.entry.get_text().into()
+        self.entry.text().into()
     }
 
     pub fn on_change<F: FnMut(&str) + 'static>(&self, fun: F) {
@@ -202,7 +202,7 @@ fn choose_file_dialog(
     dialog.add_filter(&filter);
     let result: gtk::ResponseType = dialog.run().into();
     let result = if result == gtk::ResponseType::Accept {
-        dialog.get_filename()
+        dialog.filename()
     } else {
         None
     };
@@ -222,7 +222,7 @@ fn choose_dir_dialog(parent: &gtk::Window, dir: &str) -> Option<PathBuf> {
     dialog.set_select_multiple(false);
     let result: gtk::ResponseType = dialog.run().into();
     let result = if result == gtk::ResponseType::Accept {
-        dialog.get_filename()
+        dialog.filename()
     } else {
         None
     };

@@ -197,21 +197,26 @@ impl ImageDataCache {
 
 fn load_png<R: Read>(reader: BufReader<R>, paletted: bool) -> Result<ImageData, Error> {
     let mut decoder = png::Decoder::new(reader);
-    if paletted {
-        // Default transformations expand palette to RGB, remove that
+    if !paletted {
+        // If we don't want palette, expand it to RGB
+        decoder.set_transformations(png::Transformations::EXPAND);
+    } else {
+        // Explicitly no transformations; older version of PNG had EXPAND,
+        // currently not but going to keep this.
         decoder.set_transformations(png::Transformations::IDENTITY);
     }
-    let (info, mut reader) = decoder.read_info()?;
-    let mut buf = vec![0; info.buffer_size()];
+    let mut reader = decoder.read_info()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
     reader.next_frame(&mut buf)?;
     if paletted {
         let info = reader.info();
         let palette = match info.palette {
-            Some(ref s) => Arc::new(rgb_to_rgb0(s)),
+            Some(ref s) => Arc::new(rgb_to_rgb0(&s)),
             None => return Err(anyhow!("Imported image must be paletted")),
         };
         Ok(ImageData::Paletted(buf, info.width, info.height, palette))
     } else {
+        let info = reader.info();
         let rgba = arbitrary_png_to_rgba(buf, &info)?;
         let image = image::ImageBuffer::from_raw(info.width, info.height, rgba)
             .ok_or_else(|| anyhow!("Couldn't create image from raw bytes"))?;
@@ -227,13 +232,13 @@ fn rgb_to_rgb0(input: &[u8]) -> Vec<u8> {
     out
 }
 
-fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::OutputInfo) -> Result<Vec<u8>, Error> {
+fn arbitrary_png_to_rgba(buf: Vec<u8>, info: &png::Info) -> Result<Vec<u8>, Error> {
     if info.bit_depth != png::BitDepth::Eight {
         return Err(anyhow!("Bit depth {:?} not supported", info.bit_depth));
     }
     match info.color_type {
-        png::ColorType::RGBA => Ok(buf),
-        png::ColorType::RGB => {
+        png::ColorType::Rgba => Ok(buf),
+        png::ColorType::Rgb => {
             if buf.len() != (info.width * info.height) as usize * 3 {
                 return Err(anyhow!("RGB buffer size isn't 3 * w * h?"));
             }
