@@ -29,6 +29,11 @@ pub enum LayerExportMode {
     Normal,
 }
 
+// Different from integer division which rounds towards zero.
+fn div_round_down(val: i32, div: u32) -> i32 {
+    ((val as f32) / (div as f32)).floor() as i32
+}
+
 // Won't export layers with None prefix,
 // framedef_file is joined to path, as are the image names
 pub fn export_frames<F: Fn(f32)>(
@@ -52,14 +57,22 @@ pub fn export_frames<F: Fn(f32)>(
     };
 
     let frames = file.frames().ok_or_else(|| anyhow!("Unable to get frames"))?;
-    let x_base =
-        frames.iter().map(|x| i32::from(x.x_off)).min().unwrap_or(0).min(0i32) / scale_div as i32;
-    let y_base =
-        frames.iter().map(|x| i32::from(x.y_off)).min().unwrap_or(0).min(0i32) / scale_div as i32;
-    let x_max = frames.iter().map(|x| (i32::from(x.x_off) + i32::from(x.width)) / scale_div as i32)
-        .max().unwrap_or(1);
-    let y_max = frames.iter().map(|x| (i32::from(x.y_off) + i32::from(x.height)) / scale_div as i32)
-        .max().unwrap_or(1);
+    let x_base = div_round_down(
+        frames.iter().map(|x| i32::from(x.x_off)).min().unwrap_or(0).min(0i32),
+        scale_div,
+    );
+    let y_base = div_round_down(
+        frames.iter().map(|x| i32::from(x.y_off)).min().unwrap_or(0).min(0i32),
+        scale_div,
+    );
+    let x_max = frames.iter()
+        .map(|x| div_round_down(i32::from(x.x_off) + i32::from(x.width), scale_div))
+        .max()
+        .unwrap_or(1);
+    let y_max = frames.iter()
+        .map(|x| div_round_down(i32::from(x.y_off) + i32::from(x.height), scale_div))
+        .max()
+        .unwrap_or(1);
     let frame_width = (x_max.max(width / scale_div as i32) - x_base) as u32;
     let frame_height = (y_max.max(height / scale_div as i32) - y_base) as u32;
     let mut multi_frame_images = Vec::new();
@@ -207,8 +220,8 @@ fn decode_frame_to_buf(
     let frame_width = u32::from(frame.width) / scale_div;
     let frame_height = u32::from(frame.height) / scale_div;
 
-    let blank_left = u32::try_from(frame.x_off as i32 / scale_div as i32 - x_base)?;
-    let blank_top = u32::try_from(frame.y_off as i32 / scale_div as i32 - y_base)?;
+    let blank_left = u32::try_from(div_round_down(frame.x_off as i32, scale_div) - x_base)?;
+    let blank_top = u32::try_from(div_round_down(frame.y_off as i32, scale_div) - y_base)?;
 
     let x = x + blank_left;
     let y = y + blank_top;
@@ -247,8 +260,8 @@ fn write_frame(
     let frame_width = u32::from(frame.width) / scale_div;
     let frame_height = u32::from(frame.height) / scale_div;
 
-    let blank_left = u32::try_from(frame.x_off as i32 / scale_div as i32 - x_base)?;
-    let blank_top = u32::try_from(frame.y_off as i32 / scale_div as i32 - y_base)?;
+    let blank_left = u32::try_from(div_round_down(frame.x_off as i32, scale_div) - x_base)?;
+    let blank_top = u32::try_from(div_round_down(frame.y_off as i32, scale_div) - y_base)?;
     let blank_right = out_width - (blank_left + frame_width);
     let blank_bottom = out_height - (blank_top + frame_height);
 
