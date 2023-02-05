@@ -83,8 +83,8 @@ impl SpriteLighting {
                     store2.set_value(&iter, i as u32, &value);
                 }
             });
-            col.pack_end(renderer, true);
-            col.add_attribute(renderer, "text", i);
+            CellLayoutExt::pack_end(&col, renderer, true);
+            TreeViewColumnExt::add_attribute(&col, renderer, "text", i);
             col.set_sizing(gtk::TreeViewColumnSizing::Fixed);
             tree.append_column(&col);
         }
@@ -440,7 +440,7 @@ fn rgb_color_from_string(mut text: &str) -> Option<u32> {
 }
 
 mod gtk_ext {
-    use gtk::subclass::{prelude::*};
+    use gtk::subclass::prelude::*;
     use gtk::prelude::*;
 
     #[derive(Default)]
@@ -460,40 +460,39 @@ mod gtk_ext {
     impl CellRendererImpl for CellRendererColorC {
         fn preferred_width<P: IsA<gtk::Widget>>(
             &self,
-            renderer: &CellRendererColor,
             widget: &P,
         ) -> (i32, i32) {
-            let (min, natural) = self.parent_preferred_width(renderer, widget);
-            let (_, natural_h) = self.parent_preferred_height_for_width(renderer, widget, natural);
+            let (min, natural) = self.parent_preferred_width(widget);
+            let (_, natural_h) = self.parent_preferred_height_for_width(widget, natural);
             let color_block_size = natural_h;
             (min + color_block_size, natural + color_block_size)
         }
 
         fn render<P: glib::IsA<gtk::Widget>>(
             &self,
-            renderer: &CellRendererColor,
             cr: &cairo::Context,
             widget: &P,
             background_area: &gdk::Rectangle,
             cell_area: &gdk::Rectangle,
             flags: gtk::CellRendererState,
         ) {
-            let text = match renderer.text() {
+            let obj = self.obj();
+            let text = match obj.text() {
                 Some(s) => s,
                 None => return,
             };
-            let color_block_size = cell_area.height;
-            let text_width = cell_area.width - color_block_size;
+            let color_block_size = cell_area.height();
+            let text_width = cell_area.width() - color_block_size;
             if let Some(color) = super::rgb_color_from_string(text.as_str()) {
-                let (x_padding, y_padding) = renderer.padding();
+                let (x_padding, y_padding) = obj.padding();
                 let result = cr.save()
                     .and_then(|()| {
                         cr.new_path();
                         cr.set_line_width(1.0);
                         cr.set_source_rgb(0.0, 0.0, 0.0);
                         cr.rectangle(
-                            (cell_area.x + text_width + x_padding) as f64,
-                            (cell_area.y + y_padding) as f64,
+                            (cell_area.x() + text_width + x_padding) as f64,
+                            (cell_area.y() + y_padding) as f64,
                             (color_block_size - x_padding * 2) as f64,
                             (color_block_size - y_padding * 2) as f64,
                         );
@@ -506,8 +505,8 @@ mod gtk_ext {
                             ((color >> 16) & 0xff) as f64 / 255.0,
                         );
                         cr.rectangle(
-                            (cell_area.x + text_width + x_padding) as f64 + 1.0,
-                            (cell_area.y + y_padding) as f64 + 1.0,
+                            (cell_area.x() + text_width + x_padding) as f64 + 1.0,
+                            (cell_area.y() + y_padding) as f64 + 1.0,
                             (color_block_size - x_padding * 2) as f64 - 2.0,
                             (color_block_size - y_padding * 2) as f64 - 2.0,
                         );
@@ -518,13 +517,13 @@ mod gtk_ext {
                     println!("Cairo error {}", e);
                 }
             }
-            let text_area = gdk::Rectangle {
-                x: cell_area.x,
-                y: cell_area.y,
-                width: text_width,
-                height: cell_area.height,
-            };
-            self.parent_render(renderer, cr, widget, background_area, &text_area, flags);
+            let text_area = gdk::Rectangle::new(
+                cell_area.x(),
+                cell_area.y(),
+                text_width,
+                cell_area.height(),
+            );
+            self.parent_render(cr, widget, background_area, &text_area, flags);
         }
     }
 
@@ -539,7 +538,6 @@ mod gtk_ext {
     impl CellRendererColor {
         pub fn new() -> CellRendererColor {
             glib::Object::new(&[])
-                .expect("Failed to create CellRendererColor")
         }
     }
 }

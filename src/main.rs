@@ -196,8 +196,8 @@ impl ScrolledList {
         let list = gtk::TreeView::with_model(&store);
         let col = gtk::TreeViewColumn::new();
         let renderer = gtk::CellRendererText::new();
-        col.pack_end(&renderer, true);
-        col.add_attribute(&renderer, "text", 0);
+        CellLayoutExt::pack_end(&col, &renderer, true);
+        TreeViewColumnExt::add_attribute(&col, &renderer, "text", 0);
         list.append_column(&col);
         list.set_headers_visible(false);
 
@@ -626,7 +626,7 @@ impl SpriteInfo {
             let mut gl = gl.borrow_mut();
             let rect = s.allocation();
             let render_state = gl.get_or_insert_with(|| {
-                RenderState::new(rect.width as u32, rect.height as u32)
+                RenderState::new(rect.width() as u32, rect.height() as u32)
             });
             {
                 let mut clear_reqs = this.draw_clear_requests.borrow_mut();
@@ -639,7 +639,7 @@ impl SpriteInfo {
                     }
                 }
             }
-            render_state.resize_buf(rect.width as u32, rect.height as u32);
+            render_state.resize_buf(rect.width() as u32, rect.height() as u32);
             let result = this.render_sprite(render_state);
             match result {
                 Ok(()) => {

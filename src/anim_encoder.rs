@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use anyhow::Context;
 use byteorder::{LE, WriteBytesExt};
-use ddsfile::{Dds, D3DFormat};
+use ddsfile::{Dds, D3DFormat, NewD3dParams};
 
 use crate::anim;
 use crate::grp::GrpWriter;
@@ -496,7 +496,14 @@ fn encode_dxt5(
         }
     }
 
-    let mut dds = Dds::new_d3d(height, width, None, D3DFormat::DXT5, None, None).unwrap();
+    let mut dds = Dds::new_d3d(NewD3dParams {
+        height,
+        width,
+        depth: None,
+        format: D3DFormat::DXT5,
+        mipmap_levels: None,
+        caps2: None,
+    }).unwrap();
     dds.data = out;
     let mut dds_out = Vec::new();
     dds.write(&mut dds_out).unwrap();
@@ -582,7 +589,14 @@ fn encode_dxt1(
         }
     }
 
-    let mut dds = Dds::new_d3d(height, width, None, D3DFormat::DXT1, None, None).unwrap();
+    let mut dds = Dds::new_d3d(NewD3dParams {
+        height,
+        width,
+        depth: None,
+        format: D3DFormat::DXT1,
+        mipmap_levels: None,
+        caps2: None,
+    }).unwrap();
     dds.data = out;
     let mut dds_out = Vec::new();
     dds.write(&mut dds_out).unwrap();
