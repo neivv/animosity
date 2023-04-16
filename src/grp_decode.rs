@@ -135,6 +135,15 @@ pub fn frame_count(grp: &[u8]) -> Result<u16, Error> {
     }
 }
 
+pub fn width_height(grp: &[u8]) -> Result<(u16, u16), Error> {
+    if grp.len() < 6 {
+        return Err(Error);
+    }
+    let width = LittleEndian::read_u16(&grp[2..]);
+    let height = LittleEndian::read_u16(&grp[4..]);
+    Ok((width, height))
+}
+
 /// This differentiates between transparent 0/0/0/0 and whatever palette[0] is.
 /// (Usually 0/0/0/255)
 pub fn decode_grp_to_rgba(grp: &[u8], frame: u16, palette: &[u8]) -> Result<GrpFrame, Error> {

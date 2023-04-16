@@ -16,6 +16,7 @@ pub struct ExportLayer {
     pub id: u32,
     pub sub_id: u32,
     pub prefix: String,
+    pub name: String,
     pub mode: LayerExportMode,
 }
 
@@ -167,6 +168,7 @@ pub fn export_frames<F: Fn(f32)>(
                 id: layer.id,
                 sub_id: layer.sub_id,
                 filename_prefix: layer.prefix.clone(),
+                name: layer.name.clone(),
                 encoding: match layer.mode {
                     LayerExportMode::Rgba => frame_info::LayerEncoding::Raw,
                     LayerExportMode::Green | LayerExportMode::Alpha => {
@@ -436,6 +438,7 @@ pub fn export_grp<F: Fn(f32)>(
             id: 0,
             sub_id: 0,
             filename_prefix: prefix.into(),
+            name: "grp".into(),
             encoding: frame_info::LayerEncoding::Raw,
         }],
         frame_types: Vec::new(),

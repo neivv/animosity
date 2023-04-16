@@ -29,6 +29,7 @@ mod render;
 mod render_settings;
 mod select_dir;
 mod shaders;
+mod util;
 mod widget_lighting;
 #[allow(dead_code)] mod ui_helpers;
 
@@ -1496,7 +1497,7 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     let result = if result == gtk::ResponseType::Accept {
         if let Some(path) = dialog.filename() {
             if let Some(parent) = path.parent() {
-                select_dir::set_config_entry("open_file", &parent.to_string_lossy());
+                select_dir::set_config_entry("open_file", &*parent.to_string_lossy());
             }
         }
         dialog.filename()

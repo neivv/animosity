@@ -585,7 +585,6 @@ pub fn import_frames<F: Fn(f32) + Sync>(
     frame_scale: f32,
     hd2_frame_scale: Option<f32>,
     formats: &[anim::TextureFormat],
-    layer_names: &[String],
     sprite: usize,
     ty: SpriteType,
     grp_path: Option<&Path>,
@@ -598,7 +597,6 @@ pub fn import_frames<F: Fn(f32) + Sync>(
         first_layer: usize,
         frame_scale: f32,
         scale: u32,
-        layer_names: &[String],
         report_progress: F,
     ) -> Result<(u32, u32), Error> {
         // Try to minimize amount of memory used by keeping PNGs loaded,
@@ -619,31 +617,22 @@ pub fn import_frames<F: Fn(f32) + Sync>(
             report_progress: &report_progress,
         };
         fn is_merge_ao_depth(
-            layer_names: &[String],
             layer: &frame_info::Layer,
         ) -> bool {
-            let name_ok = layer_names
-                .get(layer.id as usize)
-                .filter(|&x| x == "ao_depth")
-                .is_some();
-            name_ok && layer.encoding == frame_info::LayerEncoding::SingleChannel
+            layer.name == "ao_depth" && layer.encoding == frame_info::LayerEncoding::SingleChannel
         }
 
         for layer in &frame_info.layers {
-            let alpha_used = layer_names.get(layer.id as usize)
-                .map(|x| layer_has_alpha_bounding_box(&x))
-                .unwrap_or(false);
+            let alpha_used = layer_has_alpha_bounding_box(&layer.name);
             if layer.sub_id == 0 && alpha_used {
-                let merge_ao_depth = is_merge_ao_depth(layer_names, layer);
+                let merge_ao_depth = is_merge_ao_depth(layer);
                 ctx.add_layer(layer.id, true, merge_ao_depth)?;
             }
         }
         for layer in &frame_info.layers {
-            let alpha_used = layer_names.get(layer.id as usize)
-                .map(|x| layer_has_alpha_bounding_box(&x))
-                .unwrap_or(false);
+            let alpha_used = layer_has_alpha_bounding_box(&layer.name);
             if layer.sub_id == 0 && !alpha_used {
-                let merge_ao_depth = is_merge_ao_depth(layer_names, layer);
+                let merge_ao_depth = is_merge_ao_depth(layer);
                 ctx.add_layer(layer.id, false, merge_ao_depth)?;
             }
         }
@@ -669,7 +658,6 @@ pub fn import_frames<F: Fn(f32) + Sync>(
         0,
         frame_scale,
         1,
-        layer_names,
         |step| report_progress(step * progress_mul),
     )?;
     if let Some((hd2, dir)) = hd2_frame_info {
@@ -680,7 +668,6 @@ pub fn import_frames<F: Fn(f32) + Sync>(
             layer_count,
             hd2_frame_scale.unwrap_or(1.0),
             2,
-            layer_names,
             |step| report_progress(0.5 + step * 0.5),
         )?;
     }
@@ -713,21 +700,8 @@ pub fn import_frames<F: Fn(f32) + Sync>(
         ty
     };
 
-    let scale_mul = match ty {
-        SpriteType::Hd2 => 2u16,
-        _ => 1,
-    };
-
     let mut changes = layout_result.encode(0, &formats, 1);
     let frame_count = changes.frames.len() as u32;
-    for f in &mut changes.frames {
-        f.tex_x *= scale_mul;
-        f.tex_y *= scale_mul;
-        f.x_off *= scale_mul as i16;
-        f.y_off *= scale_mul as i16;
-        f.width = f.width * scale_mul;
-        f.height = f.height * scale_mul;
-    }
     for ty in &frame_info.frame_types {
         for f in ty.first_frame..ty.last_frame + 1 {
             if let Some(f) = changes.frames.get_mut(f as usize) {
@@ -735,7 +709,9 @@ pub fn import_frames<F: Fn(f32) + Sync>(
             }
         }
     }
-    files.set_tex_changes(sprite, ty, changes);
+    // width and height are already scaled by frame_scale
+    let wh_scaled = (width as u16, height as u16);
+    files.set_tex_changes(sprite, ty, changes, wh_scaled);
     if let Some((hd2, _dir)) = hd2_frame_info {
         let mut changes = layout_result.encode(layer_count, &formats, 2);
         for ty in &hd2.frame_types {
@@ -745,7 +721,7 @@ pub fn import_frames<F: Fn(f32) + Sync>(
                 }
             }
         }
-        files.set_tex_changes(sprite, SpriteType::Hd2, changes);
+        files.set_tex_changes(sprite, SpriteType::Hd2, changes, wh_scaled);
     }
 
     // Resize lit frames if lit exists
@@ -776,6 +752,7 @@ pub fn import_grp_to_anim<F: Fn(f32) + Sync>(
     ];
 
     let frame_count = grp_decode::frame_count(grp)?;
+    let (width, height) = grp_decode::width_height(grp)?;
     let mut layout = anim_encoder::Layout::new();
     let formats = [
         Some(format),
@@ -867,7 +844,11 @@ pub fn import_grp_to_anim<F: Fn(f32) + Sync>(
             }).collect()
         };
         changes.textures = ordered_textures;
-        files.set_tex_changes(sprite, sprite_type, changes);
+        let wh_scaled = (
+            width.saturating_mul(scale as u16),
+            height.saturating_mul(scale as u16),
+        );
+        files.set_tex_changes(sprite, sprite_type, changes, wh_scaled);
     }
 
     // Resize lit frames if lit exists

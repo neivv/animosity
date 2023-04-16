@@ -847,7 +847,7 @@ impl Files {
                     Ok((Files {
                         sprites: mainsd_sprites(mainsd.sprites().len() as u16),
                         mainsd_anim: Some((one_filename.into(), mainsd)),
-                        root_path: Some(one_filename.into()),
+                        root_path: None,
                         open_files: OpenFiles::new(),
                         sd_grp_sizes: SdGrpSizes::new(),
                         edits: HashMap::new(),
@@ -864,7 +864,7 @@ impl Files {
                     Ok((Files {
                         sprites: vec![SpriteFiles::DdsGrp(one_filename.into())],
                         mainsd_anim: None,
-                        root_path: Some(one_filename.into()),
+                        root_path: None,
                         open_files: OpenFiles::new(),
                         sd_grp_sizes: SdGrpSizes::new(),
                         edits: HashMap::new(),
@@ -1042,6 +1042,13 @@ impl Files {
         self.open_files.clear();
     }
 
+    pub fn is_anim(&self) -> bool {
+        match self.sprites.get(0) {
+            Some(SpriteFiles::DdsGrp(..)) => false,
+            _ => true,
+        }
+    }
+
     pub fn sprites(&self) -> &[SpriteFiles] {
         &self.sprites[..]
     }
@@ -1133,31 +1140,21 @@ impl Files {
         }
     }
 
-    pub fn set_tex_changes(&mut self, sprite: usize, ty: SpriteType, changes: anim::TexChanges) {
-        let file = file_location(
-            self.mainsd_anim.as_ref().map(|x| &x.1),
-            &mut self.open_files,
-            &self.sprites,
-            sprite,
-            ty,
-            &self.hd_layer_names,
-            &self.edits,
-        ).ok().and_then(|x| x);
+    pub fn set_tex_changes(
+        &mut self,
+        sprite: usize,
+        ty: SpriteType,
+        changes: anim::TexChanges,
+        (width, height): (u16, u16),
+    ) {
         let entry = self.edits.entry((sprite, ty));
-        let orig = match file.as_ref().and_then(|x| x.values_or_ref()) {
-            Some(s) => s,
-            None => {
-                warn!("Tried to update nonexisting sprite {}/{:?}", sprite, ty);
-                return;
-            }
-        };
-        let values = entry.or_insert_with(|| match orig {
-            anim::ValuesOrRef::Values(orig) => Edit::Values(EditValues {
-                values: orig,
-                tex_changes: None,
-            }),
-            anim::ValuesOrRef::Ref(i) => Edit::Ref(i),
-        });
+        let values = entry.or_insert_with(|| Edit::Values(EditValues {
+            values: SpriteValues {
+                width,
+                height,
+            },
+            tex_changes: None,
+        }));
         if let Edit::Values(ref mut vals) = values {
             vals.tex_changes = Some(changes);
         }
@@ -1274,6 +1271,11 @@ impl Files {
                             Edit::Values(ref v) => v,
                             Edit::Grp(..) => unreachable!(),
                         };
+                        let scale = match ty {
+                            SpriteType::Sd => 1,
+                            SpriteType::Hd2 => 2,
+                            SpriteType::Hd => 4,
+                        };
                         match fs::File::open(path) {
                             Ok(file) => {
                                 let anim = anim::Anim::read(file)
@@ -1289,7 +1291,7 @@ impl Files {
                                 };
                                 anim.write_patched(
                                     &mut out,
-                                    anim.scale(),
+                                    scale,
                                     1,
                                     &layer_names,
                                     &[(0, anim::ValuesOrRef::Values(edit.values))],
@@ -1297,11 +1299,6 @@ impl Files {
                                 ).with_context(|| format!("Writing {}", path.display()))?;
                             }
                             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                                let scale = match ty {
-                                    SpriteType::Sd => 1,
-                                    SpriteType::Hd2 => 2,
-                                    SpriteType::Hd => 4,
-                                };
                                 let layer_names = if ty == SpriteType::Sd {
                                     self.sd_layer_names.as_ref()
                                         .ok_or_else(|| anyhow!("Need SD layer names"))?

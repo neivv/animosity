@@ -39,7 +39,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
         Ok(Some(o)) => o,
         _ => return,
     };
-    let layer_names = file.layer_names();
+    let layer_names = file.layer_names().into_owned();
 
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
 
@@ -282,9 +282,11 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
                     if !layer.check.is_active() || !layer.check.is_visible() {
                         return None;
                     }
+                    let name = layer_names.get(layer.layer as usize)?;
                     let prefix = layer.entry.text();
                     Some(frame_export::ExportLayer {
                         prefix,
+                        name: name.into(),
                         id: layer.layer,
                         sub_id: layer.sublayer,
                         mode: layer.export_mode,

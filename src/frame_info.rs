@@ -38,6 +38,9 @@ pub struct Layer {
     pub sub_id: u32,
     pub filename_prefix: String,
     pub encoding: LayerEncoding,
+    // Will use filename_prefix when not set
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
@@ -50,6 +53,14 @@ pub enum LayerEncoding {
 pub fn parse_frame_info(path: &Path) -> Result<FrameInfo, Error> {
     let mut file = File::open(path)?;
     parse_from_reader(&mut file)
+}
+
+fn layer_name_from_prefix(prefix: &str) -> String {
+    if prefix.ends_with("ao_depth") {
+        String::from("ao_depth")
+    } else {
+        String::from(prefix.rsplit_once('_').map(|x| x.1).unwrap_or(prefix))
+    }
 }
 
 fn parse_from_reader<R: Read>(r: &mut R) -> Result<FrameInfo, Error> {
@@ -65,11 +76,13 @@ fn parse_from_reader<R: Read>(r: &mut R) -> Result<FrameInfo, Error> {
                     } else {
                         let id = u32::deserialize(&vals[0])?;
                         let filename_prefix = String::deserialize(&vals[1])?;
+                        let name = layer_name_from_prefix(&filename_prefix);
                         Ok(Layer {
                             id,
                             sub_id: 0,
                             filename_prefix,
                             encoding: LayerEncoding::Raw,
+                            name,
                         })
                     }
                 }
@@ -79,8 +92,12 @@ fn parse_from_reader<R: Read>(r: &mut R) -> Result<FrameInfo, Error> {
                 _ => Err(anyhow!("Layer must be array or object")),
             }
         }
-        parse(x)
-            .with_context(|| anyhow!("Layer {}", i))
+        let mut layer = parse(x)
+            .with_context(|| anyhow!("Layer {}", i))?;
+        if layer.name.is_empty() {
+            layer.name = layer_name_from_prefix(&layer.filename_prefix);
+        }
+        Ok(layer)
     }).collect::<Result<Vec<_>, Error>>()?;
     Ok(FrameInfo {
         frame_count: base.frame_count,
@@ -231,4 +248,6 @@ fn backwards_compat() {
     assert_eq!(result.layers.len(), 7);
     assert_eq!(result.multi_frame_images.len(), 7);
     assert_eq!(result.frame_types.len(), 1);
+    assert_eq!(result.layers[4].name, "normal");
+    assert_eq!(result.layers[6].name, "ao_depth");
 }

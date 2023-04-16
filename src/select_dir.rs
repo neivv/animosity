@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fs;
 use std::io::{self, Seek};
@@ -27,13 +28,23 @@ pub fn read_config_entry(id: &str) -> Option<String> {
     Some(json.as_object()?.get(id)?.as_str()?.into())
 }
 
+pub fn read_config_entry_int(id: &str) -> Option<i64> {
+    let mut file = fs::File::open(config_filename()?).ok()?;
+    let json: serde_json::Value = serde_json::from_reader(&mut file).ok()?;
+    Some(json.as_object()?.get(id)?.as_i64()?)
+}
+
 // Nice return value
-pub fn set_config_entry(id: &str, value: &str) -> Option<()> {
-    fn update_json(file: &mut fs::File, id: &str, value: &str) -> Option<serde_json::Value> {
+pub fn set_config_entry<V: Into<serde_json::Value>> (id: &str, value: V) -> Option<()> {
+    fn update_json(
+        file: &mut fs::File,
+        id: &str,
+        value: serde_json::Value,
+    ) -> Option<serde_json::Value> {
         let mut json: serde_json::Value = serde_json::from_reader(file).ok()?;
         {
             let obj = json.as_object_mut()?;
-            obj.insert(id.into(), value.into());
+            obj.insert(id.into(), value);
         }
         Some(json)
     }
@@ -44,11 +55,12 @@ pub fn set_config_entry(id: &str, value: &str) -> Option<()> {
         .create(true)
         .open(config_filename()?).ok()?;
 
-    let json = match update_json(&mut file, id, value) {
+    let value: serde_json::Value = value.into();
+    let json = match update_json(&mut file, id, value.clone()) {
         Some(o) => o,
         None => {
             let mut map = serde_json::map::Map::new();
-            map.insert(id.into(), value.into());
+            map.insert(id.into(), value);
             map.into()
         }
     };
@@ -84,8 +96,13 @@ fn create_common() -> (gtk::Box, gtk::Entry, gtk::Button) {
 }
 
 impl SelectDir {
-    pub fn new(window: &gtk::Window, select_id: &'static str) -> SelectDir {
-        let filename = read_config_entry(select_id);
+    pub fn new<Id: Into<Cow<'static, str>>>(window: &gtk::Window, select_id: Id) -> SelectDir {
+        let id = select_id.into();
+        Self::new_(window, id)
+    }
+
+    fn new_(window: &gtk::Window, select_id: Cow<'static, str>) -> SelectDir {
+        let filename = read_config_entry(&select_id);
 
         let (bx, entry, button) = create_common();
         if let Some(name) = filename {
@@ -101,7 +118,7 @@ impl SelectDir {
                 let val = path.to_string_lossy();
                 e.set_text(&val);
                 e.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
-                set_config_entry(select_id, &val);
+                set_config_entry(&select_id, &*val);
             }
         });
 
@@ -121,13 +138,23 @@ impl SelectDir {
 }
 
 impl SelectFile {
-    pub fn new(
+    pub fn new<Id: Into<Cow<'static, str>>>(
         window: &gtk::Window,
-        select_id: &'static str,
+        select_id: Id,
         filter_name: &'static str,
         filter_pattern: &'static str,
     ) -> SelectFile {
-        let filename = read_config_entry(select_id);
+        let id = select_id.into();
+        Self::new_(window, id, filter_name, filter_pattern)
+    }
+
+    fn new_(
+        window: &gtk::Window,
+        select_id: Cow<'static, str>,
+        filter_name: &'static str,
+        filter_pattern: &'static str,
+    ) -> SelectFile {
+        let filename = read_config_entry(&select_id);
 
         let (bx, entry, button) = create_common();
         if let Some(name) = filename {
@@ -147,7 +174,7 @@ impl SelectFile {
                 let val = path.to_string_lossy();
                 e.set_text(&val);
                 e.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
-                set_config_entry(select_id, &val);
+                set_config_entry(&select_id, &*val);
                 let mut handlers = o.borrow_mut();
                 for h in handlers.iter_mut() {
                     h(&val);
