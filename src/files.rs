@@ -1147,12 +1147,28 @@ impl Files {
         changes: anim::TexChanges,
         (width, height): (u16, u16),
     ) {
+        let file = file_location(
+            self.mainsd_anim.as_ref().map(|x| &x.1),
+            &mut self.open_files,
+            &self.sprites,
+            sprite,
+            ty,
+            &self.hd_layer_names,
+            &self.edits,
+        ).ok().and_then(|x| x);
+        let values = match file.as_ref().and_then(|x| x.values_or_ref()) {
+            Some(anim::ValuesOrRef::Values(s)) => s,
+            _ => {
+                SpriteValues {
+                    width,
+                    height,
+                }
+            }
+        };
         let entry = self.edits.entry((sprite, ty));
+
         let values = entry.or_insert_with(|| Edit::Values(EditValues {
-            values: SpriteValues {
-                width,
-                height,
-            },
+            values,
             tex_changes: None,
         }));
         if let Edit::Values(ref mut vals) = values {
