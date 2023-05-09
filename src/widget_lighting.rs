@@ -232,9 +232,16 @@ impl SpriteLighting {
             }
         } else {
             // Paste over any selected rows
-            for (frame, path) in frames.iter().zip(rows.iter()) {
-                if let Some(iter) = self.store.iter(path) {
-                    set_lit_frame_in_store(&self.store, &iter, frame);
+            let mut row_iter = rows.iter();
+            'outer: loop {
+                for frame in frames.iter() {
+                    let path = match row_iter.next() {
+                        Some(s) => s,
+                        None => break 'outer,
+                    };
+                    if let Some(iter) = self.store.iter(path) {
+                        set_lit_frame_in_store(&self.store, &iter, frame);
+                    }
                 }
             }
         }
