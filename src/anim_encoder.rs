@@ -524,7 +524,9 @@ fn encode_dxt1(
     let width = align4(width);
     let height = align4(height);
 
-    let mut out = vec![0; (width * height) as usize / 2];
+    let mut out = (0..((width * height) as usize / 16))
+        .flat_map(|_| [0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff])
+        .collect::<Vec<u8>>();
     let mut in_buf = Vec::new();
     let mut tmp_buf = Vec::new();
     for (_, f, place) in frames {
@@ -546,7 +548,7 @@ fn encode_dxt1(
         tmp_buf.resize((width_aligned * height_aligned / 2) as usize, 0);
         let (in_data, in_width, in_height) = if place_x & 3 == 0 && place_y & 3 == 0 {
             // Can just use frame data.
-            // Could also require widt/hheight be multiple of 4 and otherwise fill
+            // Could also require width/height be multiple of 4 and otherwise fill
             // with [0, 0, 0, 0], as squish defaults to [0, 0, 0, 255] for unspecified
             // pixels
             (&frame.data, frame_width, frame_height)
@@ -711,12 +713,7 @@ mod test {
             let col = i % w;
             let row = i / w;
             if row < valid_t || row >= valid_b || col < valid_l || col >= valid_r {
-                // Changing code so that pixels outside tex area were [0, 0, 0, 0] would be ok
-                if row >= align4(valid_b) || col >= align4(valid_r) {
-                    vec![0u8, 0, 0, 255]
-                } else {
-                    vec![0u8, 0, 0, 0]
-                }
+                vec![0u8, 0, 0, 0]
             } else {
                 vec![255u8, 255, 255, 255]
             }
@@ -1016,5 +1013,91 @@ mod test {
         assert_eq!(decoded.height, 16);
         let eq_data = dxt5_eq_data(24, 16, 1, 1, 17, 9);
         assert_eq!(decoded.data, eq_data);
+    }
+
+    #[test]
+    fn dxt1_borders() {
+        // 5x6 white box
+        let rgba = vec![0xff; 4 * 5 * 6];
+        let x_off = 5;
+        let y_off = 7;
+        let frames = [(
+            vec![(0, FrameOffset { x: 0, y: 0 })],
+            LayerFrames {
+                frames: vec![(Rc::new(Frame {
+                    width: 5,
+                    height: 6,
+                    data: rgba,
+                }), (0, 0))],
+                width: 5,
+                height: 6,
+            },
+            TexCoords {
+                x: x_off as u32,
+                y: y_off as u32,
+            }
+        )];
+        let encoded = encode_dxt1(&frames, 0, 16, 16, 1);
+        let cursor = std::io::Cursor::new(&encoded);
+        let decoded = anim::read_texture(cursor, &anim::Texture {
+            width: 16,
+            height: 16,
+            offset: 0,
+            size: encoded.len() as u32,
+        }).unwrap();
+        let decoded = decoded.data;
+        for x in 0..16 {
+            for y in 0..16 {
+                let bytes = &decoded[((x + y * 16) * 4)..][..4];
+                if x >= x_off && x < x_off + 5 && y >= y_off && y < y_off + 6 {
+                    assert_eq!(bytes, &[0xff, 0xff, 0xff, 0xff], "Error at pixel {}, {}", x, y);
+                } else {
+                    assert_eq!(bytes, &[0, 0, 0, 0], "Error at pixel {}, {}", x, y);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dxt5_borders() {
+        // 5x6 white box
+        let rgba = vec![0xff; 4 * 5 * 6];
+        let x_off = 5;
+        let y_off = 7;
+        let frames = [(
+            vec![(0, FrameOffset { x: 0, y: 0 })],
+            LayerFrames {
+                frames: vec![(Rc::new(Frame {
+                    width: 5,
+                    height: 6,
+                    data: rgba,
+                }), (0, 0))],
+                width: 5,
+                height: 6,
+            },
+            TexCoords {
+                x: x_off as u32,
+                y: y_off as u32,
+            }
+        )];
+        let encoded = encode_dxt5(&frames, 0, 16, 16, 1);
+        let cursor = std::io::Cursor::new(&encoded);
+        let decoded = anim::read_texture(cursor, &anim::Texture {
+            width: 16,
+            height: 16,
+            offset: 0,
+            size: encoded.len() as u32,
+        }).unwrap();
+        let decoded = decoded.data;
+        for x in 0..16 {
+            for y in 0..16 {
+                let bytes = &decoded[((x + y * 16) * 4)..][..4];
+                if x >= x_off && x < x_off + 5 && y >= y_off && y < y_off + 6 {
+                    assert_eq!(bytes, &[0xff, 0xff, 0xff, 0xff], "Error at pixel {}, {}", x, y);
+                } else {
+                    assert_eq!(bytes, &[0, 0, 0, 0], "Error at pixel {}, {}", x, y);
+                }
+            }
+        }
     }
 }
