@@ -8,21 +8,21 @@ Animosity is a program to convert to/from SC:R graphic formats.
     - The skin anims Carbot/ and Presale/ are semi-supported,
         Animosity is currently not able to handle the different scales at once if the files
         are not located in anim - HD2\anim - SD\mainSD.anim, causing importing not work
-        properly 
+        properly
         See ".anim" section for more details
-- Tileset\foliage.anim does not support importing new graphics
+- Tileset\foliage.anim does not support importing new graphics (Maybe? May work nowadays but untested)
     Importing new foliage graphics will cause SC:R to crash due to Animosity not
     handling some foliage-specific data correctly.
-- anim\main.lit (Sprite lighting) 
+- anim\main.lit (Sprite lighting)
     Fully supported when editing images.dat anims, though lacks a preview for changes
     See "Sprite lighting" section for mode details
-- images.rel (???)
-    Not supported
+- images.rel (HD anim file relation list)
+    Fully supported?
 - .dds.grp files
     Fully supported
     They will require some tedious work of importing HD/HD2/SD variants one by one when
     working on them
-- Tileset .dds.vr4 files 
+- Tileset .dds.vr4 files
     Fully supported
     They're effectively same as .dds.grp, as such, editing them is probably quite tedious
 
@@ -52,14 +52,14 @@ Importing settings that are only editable through framedef.json:
 - "frame_types" Allows editing some unknown value that is set on by-frame basis.
     See ".anim frame types" below for slightly more details.
 
-## .anim 
+## .anim
 
 While .anim files may seem like self-contained sprite atlases of possibly several layers,
 they end up having dependencies on other graphic files. As such, frame importing has to
 handle several files at once.
 
 Anim inter-file requirements:
-1) HD and HD2 anim must contain same graphics, HD2 being scaled to 50% of width/height 
+1) HD and HD2 anim must contain same graphics, HD2 being scaled to 50% of width/height
     (25% pixels) of HD. All layers should match and contain same frames at same positions
     on the texture atlas.
 2) The main "Dimensions" values don't actually seem to be used?
@@ -83,7 +83,7 @@ and when mainSD.anim is saved ad SD\mainSD.anim.
 Note that this linked .grp is selected by arr\images.dat field (which in turn uses arr\images.tbl).
 The default images.dat shares .grps with main unit and its shadow in several cases, if you end
 up using a shadow images.dat entry for an unrelated graphic, remember to edit images.dat to
-refer to a new .grp file instead. (Animosity needs to reopen files in order to detect changed 
+refer to a new .grp file instead. (Animosity needs to reopen files in order to detect changed
 arr\images.dat/tbl)
 
 ## .anim layers
@@ -94,7 +94,7 @@ RTL layers. Animosity is a bit of clunky and does not have a neat interface for 
 but editing framedef.json to add/remove layers which get imported will work.
 
 - diffuse
-    Main layer when RTL is disabled. The colors/alpha in diffuse get drawn without any 
+    Main layer when RTL is disabled. The colors/alpha in diffuse get drawn without any
     further modification in game, team color applied on top of that if the teamcolor layer exists.
     Not used at all if RTL is enabled and RTL layers exist.
     This layer should always exist.
@@ -102,27 +102,27 @@ but editing framedef.json to add/remove layers which get imported will work.
     Determines which pixels are become painted by player color. The default shader uses the
     background pixel to determine how much the color should be dimmed. #ffffff white pixel in
     the base graphic results in team color applied without changes, #00ff80 would not apply
-    red channel of team color at all, green fully, and blue at 50%. 
+    red channel of team color at all, green fully, and blue at 50%.
     The teamcolor layer itself is expected 1bit monochrome bitmap, black not applying team color
     and white applying it. The layer could probably be a full 8bit monochrome bitmap for extra
     color information, though Animosity currently forces it to 1bit when importing.
     The shaders applying team color could also be modified to modify how the layers are blended.
 - bright
-    Main colors when RTL is enabled. This layer is intended to represent the colors when the 
+    Main colors when RTL is enabled. This layer is intended to represent the colors when the
     pixels of a sprite is fully light from any direction.
 - normal
     Determines surface normals for each pixel of the sprite (That is, which direction each pixel
     is "facing").
     Used to determine which pixels are lit when different lights hit the sprite.
     There is always a "global light" coming from the direction of the camera which light up pixels
-    as usual, but sprite lighting can be used to create additional light sources coming from 
+    as usual, but sprite lighting can be used to create additional light sources coming from
     ground level.
     Normal layer only encodes X and Y components of the normal vector, with Z being calculated
     from X and Y, as the normal length is assumed to be 1.0.
     Since normal maps are usually edited in a format where X/Y/Z are all stored in R/G/B channels
     of a image, animosity supports decoding to/from X/Y - R/A format from/to X/Y/Z - R/G/B when
     selecting "Decode normals" when exporting graphics. Similarly there is an option to render
-    the raw encoded image or an image with decoded normals, decoded normals being what SC:R 
+    the raw encoded image or an image with decoded normals, decoded normals being what SC:R
     will use in the end.
     - Technical details:
         As normal components are generally considered to be values between -1.0 and 1.0 (with the
@@ -165,11 +165,14 @@ The .anim files contain an unknown "frame type" value for each of the frames. An
 directly show those values at the moment, but they can be edited by opening the framedef .json file
 and importing after editing it.
 
-It is completely unknown if the frame type has any meaning whatsoever. Observed values are 
+It is completely unknown if the frame type has any meaning whatsoever. Observed values are
 0, 1, 8, and 9, which would imply there being one flag 1 and another flag 8 which may be combined.
 SD sprites are almost always fully 0, exception being sprite#0 which is fully 1
 HD sprites use 1, 8, and 9, with normal sprites usually being 1 outside burrowing frames, and
 shadow/explosion/spell (Transparent?) sprites using 8/9 for all of their frames.
+
+- 1 = Use width / height in anim?
+- 2 = Related to player color?
 
 ## Sprite lighting
 
@@ -181,26 +184,3 @@ using HD coordinates. E.g. position 1,1 would be 1 pixel right and 1 pixel down 
 top left corner of exported image, but from the first row/column which is not completely
 transparent for this frame. This means that modifying a sprite which has lighting data to use
 more of the blank space left/top of the sprite would misalign the lighting position.
-
-## Adding more sprites with extended images.dat
-
-If you have a need for more than 999 sprites, do the following steps:
-
-1) Add more images.dat entries. (With some different program that supports extending .dats)
-2) Choose .grp names for the new sprites, add them to images.tbl, and update the new images.dat
-    entries to use those .grps.
-    You don't need to actually add the GRP files themselves, animosity will create empty 1-frame
-    GRPs later to match the default 1-frame sprite.
-3) Make sure that you have SD\mainSD.anim and anim\main.lit in your mod.
-4) Open the anim files in Animosity, and select "Anim -> Modify sprite count..." from the menu.
-5) Animosity should detect the extended images.dat size and automatically suggest a value to
-    match it. The single-sprite HD/HD2 .anim files and .grps are created automatically.
-    You'll have to still hit Save to save MainSD.anim and main.lit.
-6) Now everything should work correctly in SC:R.
-7) The new sprites default to 1x1 1-frame black pixel with only diffuse layer.
-    Since you need a framedef.json to import any new frames, you'll have to export something
-    first to get one and then edit it for your needs such as different frame count - yes, it is
-    somewhat awkward.
-    Alternatively you can import from a 1.16.1-compatible GRP which doesn't need any extra
-    information if there's a GRP version of the sprite. Only drawback is that the GRP is limited
-    to 256-color palette and lower resolution which is upscaled for HD/HD2.
