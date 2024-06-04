@@ -527,8 +527,8 @@ impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
                         .cloned()
                         .flatten()
                         .unwrap_or_else(|| Bounds {
-                            left: u32::max_value(),
-                            top: u32::max_value(),
+                            left: u32::MAX,
+                            top: u32::MAX,
                             right: 0,
                             bottom: 0,
                         });

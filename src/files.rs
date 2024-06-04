@@ -361,12 +361,14 @@ pub enum SpriteFiles {
     AnimSet(AnimFiles),
     DdsGrp(PathBuf),
     MainSdOnly {
+        #[allow(dead_code)]
         image_id: u32,
         name: String,
     }
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AnimFiles {
     pub image_id: u32,
     pub hd_filename: PathBuf,

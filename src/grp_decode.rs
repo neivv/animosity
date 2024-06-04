@@ -24,6 +24,7 @@ struct GrpHeader<'a> {
     frame_lines: &'a [u8],
 }
 
+#[allow(dead_code)]
 pub struct GrpFrame {
     /// May be either paletted or RGBA depending on function called.
     pub data: Vec<u8>,

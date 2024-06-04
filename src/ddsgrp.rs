@@ -5,6 +5,7 @@ use byteorder::{ReadBytesExt, LE, WriteBytesExt};
 
 use crate::anim::{self, ErrKind, Error};
 
+#[allow(dead_code)]
 pub struct DdsGrp {
     pub frame_count: u16,
     pub scale: u8,
