@@ -34,7 +34,7 @@ pub fn import_frames_grp<F: Fn(f32) + Sync>(
     linked_grp_path: Option<&Path>,
     report_progress: F,
 ) -> Result<(), Error> {
-    let image_data_cache = Mutex::new(ImageDataCache::default());
+    let image_data_cache = Mutex::new(ImageDataCache::new());
     let tls = thread_local::ThreadLocal::new();
     let step = AtomicUsize::new(1);
     let step_count = frame_info.frame_count as f32;
@@ -154,23 +154,40 @@ impl ImageData {
     }
 }
 
-#[derive(Default)]
 struct ImageDataCache {
-    loaded: Vec<Weak<(ImageData, PathBuf)>>,
+    /// (data, path, last cache hit)
+    loaded: Vec<Weak<(ImageData, PathBuf, AtomicUsize)>>,
+    load_count: usize,
 }
 
 #[derive(Default)]
 struct TlsImageDataCache {
-    loaded: Vec<Arc<(ImageData, PathBuf)>>,
+    /// (data, path, last cache hit)
+    loaded: Vec<Arc<(ImageData, PathBuf, AtomicUsize)>>,
 }
 
 impl TlsImageDataCache {
     fn get(&self, path: &Path) -> Option<&ImageData> {
-        self.loaded.iter().find(|x| x.1 == path).map(|x| &x.0)
+        match self.loaded.iter().find(|x| x.1 == path) {
+            Some(s) => {
+                // This isn't super sensible but whatever, approximates somewhat how
+                // recently this got used
+                s.2.fetch_add(1, Ordering::Relaxed);
+                Some(&s.0)
+            },
+            None => None,
+        }
     }
 }
 
 impl ImageDataCache {
+    fn new() -> ImageDataCache {
+        ImageDataCache {
+            loaded: Vec::new(),
+            load_count: 0,
+        }
+    }
+
     fn load_png(
         &mut self,
         filename: &Path,
@@ -180,12 +197,24 @@ impl ImageDataCache {
             self.loaded.iter().filter_map(|x| x.upgrade()).collect::<Vec<_>>();
         // Free any memory that was droped in all TLS caches but had weak pointers here
         self.loaded.retain(|x| x.strong_count() != 0);
-        if !strong_loaded.iter().any(|x| x.1 == filename) {
+        if strong_loaded.len() > 10 && self.load_count > 20 {
+            // Don't include ones with low hitcounts to keep memory usage lower
+            // (Often includes none of them then when using single image per frame mode)
+            // Quite hackfix tbh though, won't help with single images, should instead
+            // lazily bound the data on use.
+            let last_keep = self.load_count - 20;
+            strong_loaded.retain(|x| x.2.load(Ordering::Relaxed) < last_keep && x.1 != filename);
+        }
+        let matching = strong_loaded.iter().find(|x| x.1 == filename);
+        self.load_count += 1;
+        if let Some(matching) = matching {
+            matching.2.store(self.load_count, Ordering::Relaxed);
+        } else {
             let file = File::open(&filename)
                 .with_context(|| format!("Unable to open {}", filename.to_string_lossy()))?;
             let image = load_png(BufReader::new(file), paletted)
                 .with_context(|| format!("Unable to load PNG {}", filename.to_string_lossy()))?;
-            let arc = Arc::new((image, filename.into()));
+            let arc = Arc::new((image, filename.into(), AtomicUsize::new(self.load_count)));
             self.loaded.push(Arc::downgrade(&arc));
             strong_loaded.push(arc);
         }
@@ -494,7 +523,7 @@ impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
         let step = &self.step;
         let step_count = self.step_count;
 
-        let image_data_cache = Mutex::new(ImageDataCache::default());
+        let image_data_cache = Mutex::new(ImageDataCache::new());
         let tls = thread_local::ThreadLocal::new();
         let layer = self.first_layer + i as usize;
         let frames = (0..frame_info.frame_count).into_par_iter()
