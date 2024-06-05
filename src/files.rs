@@ -18,7 +18,7 @@ use crate::{Error, SpriteType};
 pub struct Files {
     sprites: Vec<SpriteFiles>,
     mainsd_anim: Option<(PathBuf, anim::Anim)>,
-    root_path: Option<PathBuf>,
+    file_root: Option<FileRoot>,
     open_files: OpenFiles,
     sd_grp_sizes: SdGrpSizes,
     edits: HashMap<(usize, SpriteType), Edit>,
@@ -739,18 +739,17 @@ fn mainsd_sprites(sprite_count: u16) -> Vec<SpriteFiles> {
 }
 
 /// Generates sprite list for case when entire mod dir is loaded
-fn anim_set_sprites(root: &Path, sprite_count: u16) -> Vec<SpriteFiles> {
+fn anim_set_sprites(root: &FileRoot, sprite_count: u16) -> Vec<SpriteFiles> {
+    let hd_dir = root.hd_anim_dir();
+    let hd2_dir = root.hd2_anim_dir();
     (0..sprite_count).map(|i| {
-        let hd_filename = |i: u16, prefix: &str| {
-            let mut dir: PathBuf = root.into();
-            dir.push(prefix);
-            dir.push(format!("main_{:03}.anim", i));
-            dir
-        };
+        let filename = format!("main_{:03}.anim", i);
+        let hd_filename = hd_dir.join(&filename);
+        let hd2_filename = hd2_dir.join(&filename);
         SpriteFiles::AnimSet(AnimFiles {
             image_id: i as u32,
-            hd_filename: hd_filename(i, "anim"),
-            hd2_filename: hd_filename(i, "HD2/anim"),
+            hd_filename,
+            hd2_filename,
             name: image_name(i as u32),
         })
     }).collect()
@@ -761,7 +760,7 @@ impl Files {
         Files {
             sprites: Vec::new(),
             mainsd_anim: None,
-            root_path: None,
+            file_root: None,
             open_files: OpenFiles::new(),
             sd_grp_sizes: SdGrpSizes::new(),
             edits: HashMap::new(),
@@ -776,7 +775,7 @@ impl Files {
     }
 
     pub fn root_path(&self) -> Option<&Path> {
-        self.root_path.as_ref().map(|x| &**x)
+        self.file_root.as_ref().map(|x| Path::new(&x.root))
     }
 
     /// Tries to load an entire anim tree structure, if files seem to be laid out like that.
@@ -784,12 +783,17 @@ impl Files {
     ///
     /// Returns sprite index if the filename is in anim/ or hd2/anim
     pub fn init(one_filename: &Path) -> Result<(Files, Option<usize>), Error> {
-        if let Some((root, index)) = file_root_from_file(one_filename) {
-            let mainsd_path = root.join("SD/mainSD.anim");
+        if let Some(file_root) = file_root_from_file(one_filename) {
+            let root = &file_root.root;
+            let index = file_root.index;
             let mainsd_anim = {
-                if mainsd_path.exists() && mainsd_path.is_file() {
-                    let mainsd = load_mainsd(&mainsd_path)?;
-                    Some((mainsd_path, mainsd))
+                if let Some(mainsd_path) = file_root.mainsd_path() {
+                    if mainsd_path.exists() && mainsd_path.is_file() {
+                        let mainsd = load_mainsd(&mainsd_path)?;
+                        Some((mainsd_path, mainsd))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -802,8 +806,9 @@ impl Files {
                 .unwrap_or_else(|_| DEFAULT_IMAGES_TBL.into());
             let images_rel = std::fs::read(root.join("images.rel"))
                 .unwrap_or_else(|_| DEFAULT_IMAGES_REL.into());
+            let primary_anim = file_root.region.is_none() && file_root.skin.is_none();
             let lit_path = root.join("anim/main.lit");
-            let lit = if lit_path.exists() && lit_path.is_file() {
+            let lit = if lit_path.exists() && lit_path.is_file() && primary_anim {
                 let file = fs::File::open(&lit_path)
                     .with_context(|| format!("Opening {} failed", lit_path.display()))?;
                 let mut read = BufReader::new(file);
@@ -822,9 +827,9 @@ impl Files {
                 .map(|x| x.1.layer_names().into());
             let hd_layer_names = hd_layer_names_from_root(&root, sprite_count as u16)?;
             Ok((Files {
-                sprites: anim_set_sprites(&root, sprite_count as u16),
+                sprites: anim_set_sprites(&file_root, sprite_count as u16),
                 mainsd_anim,
-                root_path: Some(root.into()),
+                file_root: Some(file_root),
                 open_files: OpenFiles::new(),
                 sd_grp_sizes: SdGrpSizes::new(),
                 edits: HashMap::new(),
@@ -849,7 +854,7 @@ impl Files {
                     Ok((Files {
                         sprites: mainsd_sprites(mainsd.sprites().len() as u16),
                         mainsd_anim: Some((one_filename.into(), mainsd)),
-                        root_path: None,
+                        file_root: None,
                         open_files: OpenFiles::new(),
                         sd_grp_sizes: SdGrpSizes::new(),
                         edits: HashMap::new(),
@@ -866,7 +871,7 @@ impl Files {
                     Ok((Files {
                         sprites: vec![SpriteFiles::DdsGrp(one_filename.into())],
                         mainsd_anim: None,
-                        root_path: None,
+                        file_root: None,
                         open_files: OpenFiles::new(),
                         sd_grp_sizes: SdGrpSizes::new(),
                         edits: HashMap::new(),
@@ -1399,10 +1404,11 @@ impl Files {
             }
             if let Some(ref mut images_rel) = self.images_rel {
                 if images_rel.has_changes() {
-                    let root = match self.root_path {
+                    let file_root = match self.file_root {
                         Some(ref s) => s,
                         None => return Err(anyhow!("Can't save images.rel without root path")),
                     };
+                    let root = &file_root.root;
                     let _ = fs::create_dir(root.join("SD"));
                     // There are two images.rel files, SC:R seems to randomly select one of
                     // them so they need to be similar in things which matter <.<
@@ -1460,12 +1466,13 @@ impl Files {
     /// Returns width/height of the grp that is referenced in images.dat.
     /// (E.g. The return value is only meaningful for SD sprites)
     fn grp_dimensions_for_sprite(&mut self, sprite: usize) -> Result<(u16, u16), ArcError> {
-        let root = self.root_path
+        let file_root = self.file_root
             .as_ref()
             .ok_or_else(|| {
                 anyhow!("Cannot get GRP dimensions if the files are not in \
                     placed in same layout as in CASC")
             })?;
+        let root = &file_root.root;
         let images_dat = &self.images_dat;
         let images_tbl = &self.images_tbl;
         self.sd_grp_sizes.results.entry(sprite).or_insert_with(|| {
@@ -1531,7 +1538,7 @@ impl Files {
             rel.resize(new_size);
         }
         self.new_entry_count = Some(new_size);
-        self.sprites = if let Some(ref root) = self.root_path {
+        self.sprites = if let Some(ref root) = self.file_root {
             anim_set_sprites(&root, new_size)
         } else {
             mainsd_sprites(new_size)
@@ -1742,17 +1749,83 @@ fn file_location_hd<'a>(
     }
 }
 
-fn file_root_from_file(file: &Path) -> Option<(&Path, Option<usize>)> {
+struct FileRoot {
+    root: PathBuf,
+    /// "CN"
+    region: Option<PathBuf>,
+    /// "carbot" or "presale"
+    skin: Option<PathBuf>,
+    index: Option<usize>,
+}
+
+impl FileRoot {
+    fn hd_anim_dir(&self) -> PathBuf {
+        let mut path = self.root.clone();
+        if let Some(ref region) = self.region {
+            path.push(region);
+        }
+        path.push("anim");
+        if let Some(ref skin) = self.skin {
+            path.push(skin);
+        }
+        path
+    }
+
+    fn hd2_anim_dir(&self) -> PathBuf {
+        let mut path = self.root.join("HD2");
+        if let Some(ref region) = self.region {
+            path.push(region);
+        }
+        path.push("anim");
+        if let Some(ref skin) = self.skin {
+            path.push(skin);
+        }
+        path
+    }
+
+    fn mainsd_path(&self) -> Option<PathBuf> {
+        if self.skin.is_some() {
+            return None;
+        }
+        let mut path = self.root.join("SD");
+        if let Some(ref region) = self.region {
+            path.push(region);
+        }
+        path.push("mainSD.anim");
+        Some(path)
+    }
+}
+
+fn file_root_from_file(file: &Path) -> Option<FileRoot> {
     let filename = file.file_name()
         .and_then(|f| f.to_str())?;
     let parent_path = file.parent()?;
-    let parent = parent_path.file_name()?.to_str()?;
+
+    let valid_skins = ["PreSale", "Carbot"];
+    let valid_regions = ["CN"];
+
     if filename.eq_ignore_ascii_case("mainsd.anim") {
-        if parent.eq_ignore_ascii_case("sd") {
-            parent_path.parent().map(|x| (x, None))
+        let mut path = parent_path;
+        let path_str = path.file_name()?.to_str()?;
+        let region = if let Some(region) = valid_regions.iter()
+            .find(|x| path_str.eq_ignore_ascii_case(x))
+        {
+            path = path.parent()?;
+            Some(region.into())
         } else {
             None
+        };
+        let path_str = path.file_name()?.to_str()?;
+        if !path_str.eq_ignore_ascii_case("sd") {
+            return None;
         }
+        path = path.parent()?;
+        Some(FileRoot {
+            root: path.into(),
+            region,
+            skin: None,
+            index: None,
+        })
     } else if filename.ends_with(".anim") && filename.starts_with("main_") {
         let digit_len = filename.get(5..)
             .map(|x| x.chars().take_while(|c| c.is_numeric()).count())
@@ -1763,16 +1836,45 @@ fn file_root_from_file(file: &Path) -> Option<(&Path, Option<usize>)> {
             // main_.anim is 10 chars, anything else should be part of the anim number.
             return None;
         }
-        if parent.eq_ignore_ascii_case("anim") {
-            let l2 = parent_path.parent()?;
-            if l2.file_name()?.to_str()?.eq_ignore_ascii_case("hd2") {
-                l2.parent()
-            } else {
-                Some(l2)
-            }.map(|x| (x, Some(digit)))
+
+        // Path components are in the following order:
+        // [HD2/][CN/]anim/[carbot/]main_000.anim
+        let mut path = parent_path;
+        // Check skin
+        let path_str = path.file_name()?.to_str()?;
+        let skin = if let Some(skin) = valid_skins.iter()
+            .find(|x| path_str.eq_ignore_ascii_case(x))
+        {
+            path = path.parent()?;
+            Some(skin.into())
         } else {
             None
+        };
+        let path_str = path.file_name()?.to_str()?;
+        if !path_str.eq_ignore_ascii_case("anim") {
+            return None;
         }
+        path = path.parent()?;
+        let path_str = path.file_name()?.to_str()?;
+        let region = if let Some(region) = valid_regions.iter()
+            .find(|x| path_str.eq_ignore_ascii_case(x))
+        {
+            path = path.parent()?;
+            Some(region.into())
+        } else {
+            None
+        };
+        let path_str = path.file_name()?.to_str()?;
+        if path_str.eq_ignore_ascii_case("hd2") {
+            path = path.parent()?;
+        }
+
+        Some(FileRoot {
+            root: path.into(),
+            region,
+            skin,
+            index: Some(digit),
+        })
     } else {
         None
     }
@@ -1838,26 +1940,57 @@ fn test_ddsgrp_linked_grp() {
 
 #[test]
 fn test_file_root_from_file() {
-    let root = Path::new("a/b/c");
-    assert_eq!(file_root_from_file(Path::new("a/b/c/sd/mainsd.anim")), Some((root, None)));
-    assert_eq!(
-        file_root_from_file(Path::new("a/b/c/anim/main_000.anim")),
-        Some((root, Some(0))),
-    );
-    assert_eq!(
-        file_root_from_file(Path::new("a/b/c/hd2/anim/main_000.anim")),
-        Some((root, Some(0))),
-    );
-    assert_eq!(
-        file_root_from_file(Path::new("a/b/c/hd2/anim/main_003.anim")),
-        Some((root, Some(3))),
-    );
-    assert_eq!(file_root_from_file(Path::new("a/b/c/mainsd.anim")), None);
-    assert_eq!(file_root_from_file(Path::new("a/b/c/a/main_000.anim")), None);
-    assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_nonstandard_name_000.anim")), None);
-    assert_eq!(file_root_from_file(Path::new("a/b/c/anim/main_000_nonstandard_name.anim")), None);
-    assert_eq!(
-        file_root_from_file(Path::new("a/b/c/anim/main_1000.anim")),
-        Some((root, Some(1000))),
-    );
+    let root_path = Path::new("a/b/c");
+    let check_root = |path: &str, idx: Option<usize>| {
+        let root = file_root_from_file(Path::new(path)).unwrap();
+        assert_eq!(root.root, root_path);
+        assert_eq!(root.index, idx);
+        assert_eq!(root.region, None);
+        assert_eq!(root.skin, None);
+    };
+    check_root("a/b/c/sd/mainsd.anim", None);
+    check_root("a/b/c/sd/mainsd.anim", None);
+    check_root("a/b/c/anim/main_000.anim", Some(0));
+    check_root("a/b/c/hd2/anim/main_000.anim", Some(0));
+    check_root("a/b/c/hd2/anim/main_003.anim", Some(3));
+    assert!(file_root_from_file(Path::new("a/b/c/mainsd.anim")).is_none());
+    assert!(file_root_from_file(Path::new("a/b/c/a/main_000.anim")).is_none());
+    assert!(file_root_from_file(Path::new("a/b/c/anim/main_nonstandard_name_000.anim")).is_none());
+    assert!(file_root_from_file(Path::new("a/b/c/anim/main_000_nonstandard_name.anim")).is_none());
+    check_root("a/b/c/anim/main_1000.anim", Some(1000));
+    let root = file_root_from_file(Path::new("a/b/c/anim/carbot/main_1000.anim")).unwrap();
+    assert_eq!(root.root, root_path);
+    assert_eq!(root.index, Some(1000));
+    assert_eq!(root.region, None);
+    assert_eq!(root.skin, Some(PathBuf::from("carbot")));
+    let root = file_root_from_file(Path::new("a/b/c/anim/presale/main_1000.anim")).unwrap();
+    assert_eq!(root.root, root_path);
+    assert_eq!(root.index, Some(1000));
+    assert_eq!(root.region, None);
+    assert_eq!(root.skin, Some(PathBuf::from("presale")));
+    let root = file_root_from_file(Path::new("a/b/c/cn/anim/main_1000.anim")).unwrap();
+    assert_eq!(root.root, root_path);
+    assert_eq!(root.index, Some(1000));
+    assert_eq!(root.region, Some(PathBuf::from("cn")));
+    assert_eq!(root.skin, None);
+    let root = file_root_from_file(Path::new("a/b/c/hd2/anim/carbot/main_1000.anim")).unwrap();
+    assert_eq!(root.root, root_path);
+    assert_eq!(root.index, Some(1000));
+    assert_eq!(root.region, None);
+    assert_eq!(root.skin, Some(PathBuf::from("carbot")));
+    let root = file_root_from_file(Path::new("a/b/c/hd2/anim/presale/main_1000.anim")).unwrap();
+    assert_eq!(root.root, root_path);
+    assert_eq!(root.index, Some(1000));
+    assert_eq!(root.region, None);
+    assert_eq!(root.skin, Some(PathBuf::from("presale")));
+    let root = file_root_from_file(Path::new("a/b/c/hd2/cn/anim/main_1000.anim")).unwrap();
+    assert_eq!(root.root, root_path);
+    assert_eq!(root.index, Some(1000));
+    assert_eq!(root.region, Some(PathBuf::from("cn")));
+    assert_eq!(root.skin, None);
+    let root = file_root_from_file(Path::new("a/b/c/sd/cn/mainsd.anim")).unwrap();
+    assert_eq!(root.root, root_path);
+    assert_eq!(root.index, None);
+    assert_eq!(root.region, Some(PathBuf::from("cn")));
+    assert_eq!(root.skin, None);
 }
