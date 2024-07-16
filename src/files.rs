@@ -15,6 +15,29 @@ use crate::arc_error::ArcError;
 use crate::ddsgrp;
 use crate::{Error, SpriteType};
 
+pub static DEFAULT_HD_LAYER_NAMES: &[&str] = &[
+    "diffuse",
+    "bright",
+    "teamcolor",
+    "emissive",
+    "normal",
+    "specular",
+    "ao_depth",
+];
+
+pub static DEFAULT_SD_LAYER_NAMES: &[&str] = &[
+    "diffuse",
+    "teamcolor",
+];
+
+fn default_hd_layer_names() -> Vec<String> {
+    DEFAULT_HD_LAYER_NAMES.iter().map(|&x| String::from(x)).collect()
+}
+
+fn default_sd_layer_names() -> Vec<String> {
+    DEFAULT_SD_LAYER_NAMES.iter().map(|&x| String::from(x)).collect()
+}
+
 pub struct Files {
     sprites: Vec<SpriteFiles>,
     mainsd_anim: Option<(PathBuf, anim::Anim)>,
@@ -33,8 +56,8 @@ pub struct Files {
     /// The layer names are part of the files and usually should be read from there,
     /// but when creating new entries we need some defaults.
     /// (Names are taken from first available sprite)
-    sd_layer_names: Option<Vec<String>>,
-    hd_layer_names: Option<Vec<String>>,
+    sd_layer_names: Vec<String>,
+    hd_layer_names: Vec<String>,
 }
 
 pub struct ImagesRel {
@@ -704,7 +727,7 @@ fn test_anim_index_from_filename() {
 fn hd_layer_names_from_root(
     root: &Path,
     sprite_count: u16,
-) -> Result<Option<Vec<String>>, Error> {
+) -> Result<Vec<String>, Error> {
     let files = std::fs::read_dir(root.join("anim"))?
         .filter_map(|entry| {
             entry.map(|entry| {
@@ -722,10 +745,10 @@ fn hd_layer_names_from_root(
                 .with_context(|| format!("Accessing {}", path.display()))?;
             let anim = anim::Anim::read(file)
                 .with_context(|| format!("Reading {}", path.display()))?;
-            return Ok(Some(anim.layer_names().into()));
+            return Ok(anim.layer_names().into());
         }
     }
-    Ok(None)
+    Ok(default_hd_layer_names())
 }
 
 /// Generates sprite list for case when only mainsd (-like anim) is loaded.
@@ -769,8 +792,8 @@ impl Files {
             lit: None,
             images_rel: None,
             new_entry_count: None,
-            sd_layer_names: None,
-            hd_layer_names: None,
+            sd_layer_names: default_sd_layer_names(),
+            hd_layer_names: default_hd_layer_names(),
         }
     }
 
@@ -824,7 +847,8 @@ impl Files {
                 None
             };
             let sd_layer_names = mainsd_anim.as_ref()
-                .map(|x| x.1.layer_names().into());
+                .map(|x| x.1.layer_names().into())
+                .unwrap_or_else(|| default_sd_layer_names());
             let hd_layer_names = hd_layer_names_from_root(&root, sprite_count as u16)?;
             Ok((Files {
                 sprites: anim_set_sprites(&file_root, sprite_count as u16),
@@ -863,8 +887,8 @@ impl Files {
                         lit: None,
                         images_rel: None,
                         new_entry_count: None,
-                        sd_layer_names: Some(sd_layer_names),
-                        hd_layer_names: None,
+                        sd_layer_names: sd_layer_names,
+                        hd_layer_names: default_hd_layer_names(),
                     }, None))
                 }
                 false => {
@@ -880,8 +904,8 @@ impl Files {
                         lit: None,
                         images_rel: None,
                         new_entry_count: None,
-                        sd_layer_names: None,
-                        hd_layer_names: None,
+                        sd_layer_names: default_sd_layer_names(),
+                        hd_layer_names: default_hd_layer_names(),
                     }, None))
                 }
             }
@@ -1277,8 +1301,16 @@ impl Files {
                         }
                     };
                     let out_path = temp_file_path(&path);
+                    if let Some(parent) = out_path.parent() {
+                        if !parent.exists() {
+                            fs::create_dir_all(&parent)
+                                .with_context(|| {
+                                    format!("Unable to create {}", parent.display())
+                                })?;
+                        }
+                    }
                     let mut out = fs::File::create(&out_path).with_context(|| {
-                        format!("Unable to create {}", out_path.to_string_lossy())
+                        format!("Unable to create {}", out_path.display())
                     })?;
                     temp_files.push((out_path, path.into()));
                     if is_anim {
@@ -1323,11 +1355,9 @@ impl Files {
                             }
                             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                                 let layer_names = if ty == SpriteType::Sd {
-                                    self.sd_layer_names.as_ref()
-                                        .ok_or_else(|| anyhow!("Need SD layer names"))?
+                                    &self.sd_layer_names[..]
                                 } else {
-                                    self.hd_layer_names.as_ref()
-                                        .ok_or_else(|| anyhow!("Need HD layer names"))?
+                                    &self.hd_layer_names[..]
                                 };
                                 let tex_edit = edit.tex_changes.as_ref()
                                     .ok_or_else(|| {
@@ -1513,12 +1543,8 @@ impl Files {
 
     pub fn resize_entry_counts(&mut self, new_size: u16) -> Result<(), Error> {
         if let Some((_, ref mut mainsd)) = self.mainsd_anim {
-            let sd_layer_names = self.sd_layer_names.as_ref()
-                .ok_or_else(|| anyhow!("No SD layer names available"))?;
-            let hd_layer_names = self.hd_layer_names.as_ref()
-                .ok_or_else(|| {
-                    anyhow!("No HD layer names available (No HD sprites available?)")
-                })?;
+            let sd_layer_names = &self.sd_layer_names[..];
+            let hd_layer_names = &self.hd_layer_names[..];
             let old_size = match self.new_entry_count {
                 Some(s) => s,
                 None => mainsd.sprites().len() as u16,
@@ -1634,7 +1660,7 @@ fn file_location<'a>(
     sprites: &[SpriteFiles],
     sprite: usize,
     ty: SpriteType,
-    hd_layer_names: &Option<Vec<String>>,
+    hd_layer_names: &[String],
     edits: &HashMap<(usize, SpriteType), Edit>,
 ) -> Result<Option<FileLocation<'a>>, Error> {
     match sprites.get(sprite) {
@@ -1695,7 +1721,7 @@ fn file_location_hd<'a>(
     sprites: &[SpriteFiles],
     sprite: usize,
     ty: SpriteType,
-    hd_layer_names: &Option<Vec<String>>,
+    layer_names: &[String],
     edits: &HashMap<(usize, SpriteType), Edit>,
 ) -> Result<Option<FileLocation<'a>>, Error> {
     if let Some(index) = open_files.anim.iter().position(|x| x.1 == sprite && x.2 == ty) {
@@ -1717,30 +1743,28 @@ fn file_location_hd<'a>(
             // Create a in-memory anim that then is read - somewhat messy workaround
             // that makes state management even worse :l
             if let Some(&Edit::Values(ref edit)) = edits.get(&(sprite, ty)) {
-                if let Some(ref layer_names) = hd_layer_names {
-                    if let Some(ref tex_edit) = edit.tex_changes {
-                        let scale = match ty {
-                            SpriteType::Sd => 1,
-                            SpriteType::Hd2 => 2,
-                            SpriteType::Hd => 4,
-                        };
-                        let mut out = io::Cursor::new(Vec::new());
-                        let sprites = [
-                            (anim::ValuesOrRef::Values(edit.values), tex_edit),
-                        ];
-                        anim::Anim::write_new(
-                            &mut out,
-                            scale,
-                            &layer_names,
-                            &sprites,
-                        ).with_context(|| format!("Writing {}", path.display()))?;
-                        out.set_position(0);
-                        let anim = anim::Anim::read(out)?;
-                        open_files.anim.push((anim, sprite, ty));
-                        return Ok(Some(
-                            FileLocation::Separate(&open_files.anim.last_mut().unwrap().0)
-                        ))
-                    }
+                if let Some(ref tex_edit) = edit.tex_changes {
+                    let scale = match ty {
+                        SpriteType::Sd => 1,
+                        SpriteType::Hd2 => 2,
+                        SpriteType::Hd => 4,
+                    };
+                    let mut out = io::Cursor::new(Vec::new());
+                    let sprites = [
+                        (anim::ValuesOrRef::Values(edit.values), tex_edit),
+                    ];
+                    anim::Anim::write_new(
+                        &mut out,
+                        scale,
+                        &layer_names,
+                        &sprites,
+                    ).with_context(|| format!("Writing {}", path.display()))?;
+                    out.set_position(0);
+                    let anim = anim::Anim::read(out)?;
+                    open_files.anim.push((anim, sprite, ty));
+                    return Ok(Some(
+                        FileLocation::Separate(&open_files.anim.last_mut().unwrap().0)
+                    ))
                 }
             }
             Ok(None)

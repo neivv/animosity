@@ -24,6 +24,7 @@ use crate::{
     label_section, lookup_action, error_msg_box, info_msg_box, SpriteInfo, SpriteType, Error,
     error_from_panic,
 };
+use crate::files::{DEFAULT_HD_LAYER_NAMES, DEFAULT_SD_LAYER_NAMES};
 
 use crate::ui_helpers::*;
 use crate::util::{OptionExt, SliceExt};
@@ -32,21 +33,6 @@ enum Progress {
     Done(Result<u32, Error>),
     Progress(f32),
 }
-
-static HD_LAYER_NAMES: &[&str] = &[
-    "diffuse",
-    "bright",
-    "teamcolor",
-    "emissive",
-    "normal",
-    "specular",
-    "ao_depth",
-];
-
-static SD_LAYER_NAMES: &[&str] = &[
-    "diffuse",
-    "teamcolor",
-];
 
 pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
     let tex_id = sprite_info.tex_id();
@@ -764,10 +750,10 @@ fn split_frame_info_hd_sd(
         if !checkboxes.layer_enabled(&layer.name) {
             continue;
         }
-        if let Some(hd_idx) = HD_LAYER_NAMES.iter().position(|&x| x == layer.name) {
+        if let Some(hd_idx) = DEFAULT_HD_LAYER_NAMES.iter().position(|&x| x == layer.name) {
             layer_to_hd.push((layer.id, hd_idx as u32));
         }
-        if let Some(sd_idx) = SD_LAYER_NAMES.iter().position(|&x| x == layer.name) {
+        if let Some(sd_idx) = DEFAULT_SD_LAYER_NAMES.iter().position(|&x| x == layer.name) {
             layer_to_sd.push((layer.id, sd_idx as u32));
         }
     }
@@ -815,7 +801,7 @@ struct OutLayerCheckboxesInner {
 
 impl OutLayerCheckboxes {
     pub fn new() -> OutLayerCheckboxes {
-        let layer_names = HD_LAYER_NAMES;
+        let layer_names = DEFAULT_HD_LAYER_NAMES;
         static FORMATS_ANIM: &[(anim::TextureFormat, &str)] = &[
             (anim::TextureFormat::Dxt1, "DXT1"),
             (anim::TextureFormat::Dxt5, "DXT5"),
@@ -864,9 +850,9 @@ impl OutLayerCheckboxes {
 
     pub fn get_formats(&self) -> Result<(Vec<anim::TextureFormat>, Vec<anim::TextureFormat>), ()> {
         let mut hd: Vec<anim::TextureFormat> =
-            HD_LAYER_NAMES.iter().map(|_| anim::TextureFormat::Monochrome).collect();
+            DEFAULT_HD_LAYER_NAMES.iter().map(|_| anim::TextureFormat::Monochrome).collect();
         let mut sd: Vec<anim::TextureFormat> =
-            SD_LAYER_NAMES.iter().map(|_| anim::TextureFormat::Monochrome).collect();
+            DEFAULT_SD_LAYER_NAMES.iter().map(|_| anim::TextureFormat::Monochrome).collect();
         for &(ref check, ref format, name) in self.0.checkboxes.iter() {
             let format = if let Some(format) = format.active() {
                 format
@@ -877,10 +863,10 @@ impl OutLayerCheckboxes {
                 // Just a dummy value since the layer is unused
                 anim::TextureFormat::Monochrome
             };
-            if let Some(idx) = HD_LAYER_NAMES.iter().position(|&x| x == name) {
+            if let Some(idx) = DEFAULT_HD_LAYER_NAMES.iter().position(|&x| x == name) {
                 hd[idx] = format;
             }
-            if let Some(idx) = SD_LAYER_NAMES.iter().position(|&x| x == name) {
+            if let Some(idx) = DEFAULT_SD_LAYER_NAMES.iter().position(|&x| x == name) {
                 sd[idx] = format;
             }
         }

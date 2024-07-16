@@ -857,11 +857,25 @@ pub fn import_grp_to_anim<F: Fn(f32) + Sync>(
         // Fix tex change layers from diffuse/teamcolor to match
         // layer_names
         let ordered_textures = {
-            let file = files.file(sprite, sprite_type)
-                .ok()
-                .flatten()
-                .ok_or_else(|| anyhow!("Can't access Sprite {}/{:?}", sprite, sprite_type))?;
-            let layer_names = file.layer_names();
+            let layer_names = {
+                let file = files.file(sprite, sprite_type)
+                    .ok()
+                    .flatten();
+                match file {
+                    Some(o) => o.layer_names(),
+                    None => {
+                        let names = if sprite_type == SpriteType::Sd {
+                            crate::files::DEFAULT_SD_LAYER_NAMES
+                        } else {
+                            crate::files::DEFAULT_HD_LAYER_NAMES
+                        };
+                        names.iter()
+                            .map(|&x| String::from(x))
+                            .collect::<Vec<String>>()
+                            .into()
+                    }
+                }
+            };
             layer_names.iter().map(|name| {
                 if name == "diffuse" {
                     changes.textures[0].take()
