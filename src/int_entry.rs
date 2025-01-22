@@ -1,8 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gio::prelude::*;
 use gtk::prelude::*;
+use gtk::glib::signal::Propagation;
+use gtk::{gdk, glib, gio};
 
 use crate::lookup_action;
 
@@ -46,7 +47,7 @@ pub fn entry() -> (gtk::Entry, gtk::Frame) {
     entry.set_input_hints(hints);
     let frame = gtk::Frame::new(None);
     <_ as gtk::prelude::WidgetExt>::set_widget_name(&frame, "entry_frame");
-    frame.add(&entry);
+    frame.set_child(Some(&entry));
     let style_ctx = frame.style_context();
     let css = crate::get_css_provider();
     style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
@@ -63,6 +64,7 @@ impl IntEntry {
         let (entry, frame) = entry();
         entry.set_max_length(max_len);
         entry.set_width_chars(max_len);
+        entry.set_max_width_chars(max_len + 1);
         Arc::new(IntEntry {
             entry,
             frame,
@@ -71,11 +73,11 @@ impl IntEntry {
     }
 
     pub fn set_value(&self, val: u32) {
-        self.entry.set_text(&val.to_string());
+        self.entry.buffer().set_text(&val.to_string());
     }
 
     pub fn get_value(&self) -> u32 {
-        self.entry.text().parse::<u32>().unwrap_or(0)
+        self.entry.buffer().text().parse::<u32>().unwrap_or(0)
     }
 
     pub fn connect_actions<A: IsA<gio::ActionMap>>(
@@ -84,56 +86,60 @@ impl IntEntry {
         init_action: &str,
         edit_action: &str,
     ) {
-        this.entry.connect_focus_out_event(|s, _| {
-            let s = match s.clone().downcast::<gtk::Entry>() {
-                Ok(o) => o,
-                Err(_) => return Inhibit(false),
-            };
-            if let Some(fix) = fix_text(&s.text()) {
-                s.set_text(&fix);
+        let focus_ctrl = gtk::EventControllerFocus::new();
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Arc::downgrade(&this);
+        focus_ctrl.connect_leave(move |_s| {
+            if let Some(this) = weak.upgrade() {
+                let buffer = this.entry.buffer();
+                if let Some(fix) = fix_text(&buffer.text()) {
+                    buffer.set_text(&fix);
+                }
             }
-            Inhibit(false)
         });
-        this.entry.connect_key_press_event(|_s, key| {
-            use gdk::keys::constants;
+        key_ctrl.connect_key_pressed(|_s, key, _keycode, modifier| {
             use glib::translate::IntoGlib;
 
-            let modifier = key.state();
-            let key = key.keyval();
-            let acceptable = key == constants::BackSpace ||
-                key == constants::Delete ||
+            let acceptable = key == gdk::Key::BackSpace ||
+                key == gdk::Key::Delete ||
                 key.to_unicode()
                     .filter(|&c| c as u32 >= b'0' as u32 && c as u32 <= b'9' as u32)
                     .is_some() ||
                 modifier.contains(gdk::ModifierType::CONTROL_MASK);
             if acceptable {
-                // EMIT CHANGE
-                Inhibit(false)
+                Propagation::Proceed
             } else {
                 if key.into_glib() > 65000 {
-                    return Inhibit(false);
+                    return Propagation::Proceed;
                 }
-                Inhibit(true)
+                Propagation::Stop
             }
         });
-        let s = this.clone();
+        this.entry.add_controller(focus_ctrl);
+        this.entry.add_controller(key_ctrl);
+        let weak = Arc::downgrade(&this);
         if let Some(a) = lookup_action(actions, init_action) {
             a.connect_activate(move |_, param| {
-                if let Some(val) = param.as_ref().and_then(|x| x.get::<u32>()) {
-                    s.disable_edit_events.fetch_add(1, Ordering::Relaxed);
-                    s.entry.set_text(&val.to_string());
-                    s.disable_edit_events.fetch_sub(1, Ordering::Relaxed);
+                if let Some(s) = weak.upgrade() {
+                    if let Some(val) = param.as_ref().and_then(|x| x.get::<u32>()) {
+                        s.disable_edit_events.fetch_add(1, Ordering::Relaxed);
+                        s.entry.set_text(&val.to_string());
+                        s.disable_edit_events.fetch_sub(1, Ordering::Relaxed);
+                    }
                 }
             });
         } else {
             println!("NO ACTION {}", init_action);
         }
         if let Some(a) = lookup_action(actions, edit_action) {
-            let t = this.clone();
+            let weak = Arc::downgrade(&this);
             this.entry.connect_text_notify(move |s| {
-                if t.disable_edit_events.load(Ordering::Relaxed) == 0 {
-                    if let Ok(i) = s.text().parse::<u32>() {
-                        a.activate(Some(&i.to_variant()));
+                if let Some(t) = weak.upgrade() {
+                    if t.disable_edit_events.load(Ordering::Relaxed) == 0 {
+                        if let Ok(i) = s.text().parse::<u32>() {
+                            a.activate(Some(&i.to_variant()));
+                        }
                     }
                 }
             });

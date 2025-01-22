@@ -1,4 +1,4 @@
-use gtk;
+use gtk::{glib};
 use gtk::prelude::*;
 
 use crate::frame_export_dialog::SavedCheckbox;
@@ -54,27 +54,42 @@ pub fn box_add_padding<T: BoxableWidget>(widget: &T, padding: u32) -> AddPadding
 }
 
 pub fn box_vertical(widgets: &[&dyn BoxableWidget]) -> gtk::Box {
+    use gtk::prelude::WidgetExt;
     let bx = gtk::Box::new(gtk::Orientation::Vertical, 5);
     for widget in widgets {
         let expand = widget.expands();
-        bx.pack_start(widget.widget(), expand, expand, widget.padding());
+        if expand {
+            widget.widget().set_vexpand(true);
+        }
+        bx.append(widget.widget());
     }
     bx
 }
 
 pub fn box_horizontal(widgets: &[&dyn BoxableWidget]) -> gtk::Box {
+    use gtk::prelude::WidgetExt;
     let bx = gtk::Box::new(gtk::Orientation::Horizontal, 5);
     for widget in widgets {
         let expand = widget.expands();
-        bx.pack_start(widget.widget(), expand, expand, widget.padding());
+        if expand {
+            widget.widget().set_hexpand(true);
+        }
+        bx.append(widget.widget());
     }
     bx
 }
 
 pub fn pane_horizontal(first: &dyn BoxableWidget, second: &dyn BoxableWidget) -> gtk::Paned {
+    use gtk::prelude::WidgetExt;
     let pane = gtk::Paned::new(gtk::Orientation::Horizontal);
-    pane.pack1(first.widget(), first.expands(), false);
-    pane.pack2(second.widget(), second.expands(), false);
+    if first.expands() {
+        first.widget().set_hexpand(true);
+    }
+    if second.expands() {
+        second.widget().set_hexpand(true);
+    }
+    pane.set_start_child(Some(first.widget()));
+    pane.set_end_child(Some(second.widget()));
     pane
 }
 
@@ -123,7 +138,7 @@ pub fn label_section_with_enable_check<O: IsA<gtk::Widget>>(
     obj.set_margin_bottom(obj.margin_bottom() + 2);
     obj.set_margin_start(obj.margin_start() + 2);
     obj.set_margin_end(obj.margin_end() + 2);
-    frame.add(obj);
+    frame.set_child(Some(obj));
 
     let frame2 = frame.clone();
     let check2 = check.clone();
@@ -132,8 +147,8 @@ pub fn label_section_with_enable_check<O: IsA<gtk::Widget>>(
     });
 
     let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    bx.pack_start(check.widget(), false, false, 0);
-    bx.pack_start(&frame, false, false, 0);
+    bx.append(check.widget());
+    bx.append(&frame);
     CheckEnabledSection {
         check,
         bx,

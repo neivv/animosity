@@ -1,26 +1,31 @@
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use glib::types::Type;
-use glib::value::Value;
-use gio::prelude::*;
+use gtk::glib::prelude::*;
 use gtk::prelude::*;
+use gtk::subclass::prelude::*;
+use gtk::{glib, gio, gdk};
+use gtk::glib::signal::Propagation;
+use gtk::glib::Properties;
 
 use crate::anim_lit;
 use crate::files::{Files, SpriteFiles};
 use crate::recurse_checked_mutex::Mutex;
 use crate::SpriteType;
+use crate::util::*;
 
 pub struct SpriteLighting {
     bx: gtk::Box,
     enabled: gtk::CheckButton,
-    tree: gtk::TreeView,
+    tree: gtk::ColumnView,
     // Columns: frame idx, color hex string, x, y, intensity, radius
-    store: gtk::ListStore,
+    model: gtk::MultiSelection,
     files: Arc<Mutex<Files>>,
     active_sprite: AtomicUsize,
     listening_input: AtomicBool,
     sprite_actions: gio::SimpleActionGroup,
+    lighting_actions: gio::SimpleActionGroup,
 }
 
 impl SpriteLighting {
@@ -30,76 +35,138 @@ impl SpriteLighting {
     ) -> Arc<SpriteLighting> {
         use crate::ui_helpers::*;
 
+        let lighting_actions = gio::SimpleActionGroup::new();
+
+        let click_ctrl = gtk::GestureClick::new();
+        click_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click_ctrl.set_button(3); // Rclick
+
         let enabled = gtk::CheckButton::with_label("Enabled");
-        let columns = &[Type::U32, Type::STRING, Type::I32, Type::I32, Type::U32, Type::U32];
-        let store = gtk::ListStore::new(columns);
-        let tree = gtk::TreeView::with_model(&store);
+        let inner_model = gio::ListStore::new::<LitFrameObject>();
+        let model = gtk::MultiSelection::new(Some(inner_model));
+        let tree = gtk::ColumnView::new(Some(model.clone()));
         for i in 0..6 {
-            let col = gtk::TreeViewColumn::new();
-            let a;
-            let b;
-            let renderer: &gtk::CellRendererText = if i == 1 {
-                a = gtk_ext::CellRendererColor::new();
-                a.upcast_ref()
-            } else {
-                b = gtk::CellRendererText::new();
-                &b
-            };
-            col.set_title(match i {
+            let title = match i {
                 0 => "Frame",
                 1 => "Color",
-                2 => "X",
-                3 => "Y",
+                // Spaces are a hack to make things not resize when there are no frames
+                2 => "X　　",
+                3 => "Y　　",
                 4 => "Intensity",
                 5 | _ => "Radius",
-            });
-            if i == 0 {
-                renderer.set_editable(false);
-            } else {
-                renderer.set_editable(true);
-            }
-            let store2 = store.clone();
-            renderer.connect_edited(move |_, path, value| {
-                if let Some(iter) = store2.iter(&path) {
-                    let value = match i {
-                        1 => {
-                            if rgb_color_from_string(value).is_none() {
-                                return;
-                            }
-                            Value::from(value)
-                        }
-                        _ => match columns[i as usize] {
-                            Type::U32 => match value.parse::<u32>() {
-                                Ok(o) => Value::from(&o),
-                                Err(_) => return,
-                            },
-                            Type::I32 => match value.parse::<i32>() {
-                                Ok(o) => Value::from(&o),
-                                Err(_) => return,
-                            },
-                            _ => return,
-                        }
-                    };
-                    store2.set_value(&iter, i as u32, &value);
+            };
+            let factory = gtk::SignalListItemFactory::new();
+            let count = Cell::new(0);
+            factory.connect_bind(move |_, item| {
+                /*
+                let item = match item.downcast_ref::<gtk::ColumnViewCell>() {
+                    Some(s) => s,
+                    None => {
+                        debug_assert!(false);
+                        return;
+                    }
+                };
+                let item = item.child().unwrap();
+                let p = item.parent().unwrap();
+                let p = p.parent().unwrap();
+                */
+                if i == 0 {
+                //std::mem::forget(p);
+                    //println!("Bind {p:?} {} {}", p.ref_count(), count.get());
+                    count.set(count.get() + 1);
                 }
             });
-            CellLayoutExt::pack_end(&col, renderer, true);
-            TreeViewColumnExt::add_attribute(&col, renderer, "text", i);
-            col.set_sizing(gtk::TreeViewColumnSizing::Fixed);
+            let count = Cell::new(0);
+            factory.connect_unbind(move |_, item| {
+                if i == 0 {
+                    println!("Unbind {}", count.get());
+                    count.set(count.get() + 1);
+                }
+            });
+            let count = Cell::new(0);
+            factory.connect_teardown(move |_, item| {
+                if i == 0 {
+                    println!("Teardown {}", count.get());
+                    count.set(count.get() + 1);
+                }
+            });
+            let count = Cell::new(0);
+            factory.connect_setup(move |_, item| {
+                let item = match item.downcast_ref::<gtk::ColumnViewCell>() {
+                    Some(s) => s,
+                    None => {
+                        debug_assert!(false);
+                        return;
+                    }
+                };
+                item.set_selectable(true);
+                item.set_activatable(true);
+                let prop_name = match i {
+                    0 => "index",
+                    1 => "color",
+                    2 => "x",
+                    3 => "y",
+                    4 => "intensity",
+                    5 | _ => "radius",
+                };
+                println!("Create col cell {i} {}", count.get());
+                count.set(count.get() + 1);
+                match i {
+                    99 => {
+                        let label = gtk::Label::new(None);
+                        label.set_valign(gtk::Align::Start);
+                        item.set_child(Some(&label));
+                        item.property_expression("item")
+                            .chain_property::<LitFrameObject>(prop_name)
+                            .bind(&label, "label", gtk::Widget::NONE);
+                    }
+                    _ => {
+                        let entry = gtk::Entry::new();
+                        entry.set_has_frame(false);
+                        //let entry = gtk::Text::new();
+                        entry.set_width_chars(6);
+                        entry.set_max_width_chars(6);
+                        if i == 0 {
+                            entry.set_sensitive(false);
+                            entry.add_css_class("cell-entry-disabled");
+                        }
+                        let buffer = entry.buffer();
+                        item.set_child(Some(&entry));
+                        /*
+                        item.property_expression("item")
+                            .chain_property::<LitFrameObject>(prop_name)
+                            .bind(&buffer, "text", gtk::Widget::NONE);
+                        */
+                    }
+                }
+            });
+            let col = gtk::ColumnViewColumn::new(Some(title), Some(factory));
             tree.append_column(&col);
         }
-        tree.set_fixed_height_mode(true);
-        tree.set_activate_on_single_click(true);
-        tree.selection().set_mode(gtk::SelectionMode::Multiple);
-        let none: Option<&gtk::Adjustment> = None;
-        let tree_scroll = gtk::ScrolledWindow::new(none, none);
-        tree_scroll.add(&tree);
-        tree_scroll.set_overlay_scrolling(false);
+        tree.set_single_click_activate(false);
+        tree.set_enable_rubberband(false);
+        tree.set_reorderable(false);
+        let tree_scroll = gtk::ScrolledWindow::new();
+        tree_scroll.set_child(Some(&tree));
+        //tree_scroll.set_overlay_scrolling(false);
         tree_scroll.set_vscrollbar_policy(gtk::PolicyType::Always);
         tree_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
-        tree_scroll.set_propagate_natural_width(true);
-        tree_scroll.set_propagate_natural_height(true);
+        //tree_scroll.set_propagate_natural_width(true);
+        //tree_scroll.set_propagate_natural_height(true);
         tree_scroll.set_min_content_height(100);
+
+        let menu = {
+            use crate::menu_item_with_accel as with_accel;
+            let model = gio::Menu::new();
+            model.append_item(&with_accel("Copy", "lighting.copy", "<Ctrl>C"));
+            model.append_item(&with_accel("Paste", "lighting.paste", "<Ctrl>V"));
+            let menu = gtk::PopoverMenu::from_model(Some(&model));
+            menu.set_has_arrow(false);
+            menu.set_halign(gtk::Align::Start);
+            menu.set_valign(gtk::Align::Start);
+            menu.set_parent(&tree);
+            menu
+        };
         let bx = box_vertical(&[
             &enabled as &dyn BoxableWidget,
             &box_expand(&tree_scroll),
@@ -107,16 +174,19 @@ impl SpriteLighting {
         let bx = crate::label_section("Sprite lighting", &bx);
         bx.set_margin_start(5);
         bx.set_margin_end(5);
+        bx.insert_action_group("lighting", Some(&lighting_actions));
         let result = Arc::new(SpriteLighting {
             bx,
             files: files.clone(),
             active_sprite: AtomicUsize::new(0),
             enabled,
             tree,
-            store,
+            model,
             listening_input: AtomicBool::new(true),
             sprite_actions,
+            lighting_actions,
         });
+        result.create_lighting_actions();
         let this = result.clone();
         result.enabled.connect_toggled(move |check| {
             if this.listening_input.load(Ordering::Relaxed) == false {
@@ -125,14 +195,15 @@ impl SpriteLighting {
             this.enable_for_current(check.is_active());
         });
         let this = result.clone();
-        result.store.connect_row_changed(move |store, path, iter| {
+        result.model.connect_items_changed(move |model, pos, _removed, _added| {
+            let this = &this;
             if this.listening_input.load(Ordering::Relaxed) == false {
                 return;
             }
             || -> Option<()> {
+                let frame_id = pos;
+                let frame = lit_frame_from_model(&model, pos)?;
                 let dirty;
-                let &frame_id = path.indices().get(0)?;
-                let frame = lit_frame_from_store_iter(&store, &iter)?;
                 {
                     let mut files = this.files.lock();
                     let lit = files.lit()?;
@@ -147,38 +218,81 @@ impl SpriteLighting {
                 Some(())
             }();
         });
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = result.clone();
-        result.tree.connect_key_press_event(move |_, event| {
+        key_ctrl.connect_key_pressed(move |_s, key, _keycode, modifier| {
             if this.listening_input.load(Ordering::Relaxed) == false {
-                return Inhibit(false);
+                return Propagation::Proceed;
             }
-            if event.state().intersects(gdk::ModifierType::CONTROL_MASK) {
-                match event.keyval() {
-                    gdk::keys::constants::c => {
+            if modifier.intersects(gdk::ModifierType::CONTROL_MASK) {
+                match key {
+                    gdk::Key::C => {
                         this.copy_row();
-                        return Inhibit(true);
+                        return Propagation::Stop;
                     }
-                    gdk::keys::constants::v => {
-                        this.paste_row();
-                        return Inhibit(true);
+                    gdk::Key::V => {
+                        SpriteLighting::paste_row(&this);
+                        return Propagation::Stop;
                     }
                     _ => (),
                 }
             }
-            Inhibit(false)
+            Propagation::Proceed
         });
         let this = result.clone();
-        result.tree.connect_button_release_event(move |_, event| {
-            // Rclick
-            if event.button() == 3 {
-                let menu = this.clone().make_rclick_menu();
-                menu.popup_at_pointer(Some(event));
-                Inhibit(true)
-            } else {
-                Inhibit(false)
+        click_ctrl.set_exclusive(true);
+        let tree = result.tree.clone();
+        click_ctrl.connect_pressed(move |_, _, x, y| {
+            if let Some(widget) = tree.pick(x, y, gtk::PickFlags::INSENSITIVE) {
+                println!("Got");
+                /*
+                if let Some(cell) = widget.ancestor(gtk::ColumnViewCell::static_type()) {
+                    if let Some(cell) = cell.downcast_ref::<gtk::ColumnViewCell>().should() {
+                        println!("Got cell {}", cell.position());
+                    }
+                }
+                */
             }
+            this.update_paste_state();
+            menu.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            menu.popup();
         });
+
+        result.tree.add_controller(key_ctrl);
+        result.tree.add_controller(click_ctrl);
         result
+    }
+
+    fn create_lighting_actions(self: &Arc<Self>) {
+        fn action<F>(
+            group: &gio::ActionMap,
+            name: &str,
+            enabled: bool,
+            param_ty: Option<&str>,
+            fun: F,
+        ) -> gio::SimpleAction
+        where F: Fn(&gio::SimpleAction, Option<&glib::Variant>) + 'static
+        {
+            let param_ty = param_ty.map(|x| {
+                glib::VariantTy::new(x)
+                    .unwrap_or_else(|_| panic!("Invalid variant type string {}", x))
+            });
+            let action = gio::SimpleAction::new(name, param_ty);
+            action.set_enabled(enabled);
+            action.connect_activate(fun);
+            group.add_action(&action);
+            action
+        }
+        let group = self.lighting_actions.upcast_ref();
+        let this = self.clone();
+        action(group, "copy", true, None, move |_, _| {
+            this.copy_row();
+        });
+        let this = self.clone();
+        action(group, "paste", true, None, move |_, _| {
+            Self::paste_row(&this);
+        });
     }
 
     pub fn widget(&self) -> gtk::Widget {
@@ -193,79 +307,65 @@ impl SpriteLighting {
     fn copy_row(&self) {
         use std::fmt::Write;
         let mut result = String::new();
-        let frames = self.tree.selection()
-            .selected_rows().0
-            .into_iter()
-            .filter_map(|path| self.store.iter(&path))
-            .filter_map(|iter| lit_frame_from_store_iter(&self.store, &iter));
+        let selection = self.model.selection();
+        let frames = iter_bitset(&selection)
+            .filter_map(|n| lit_frame_from_model(&self.model, n));
         for f in frames {
             writeln!(result, "{}, {}, {}, {}, {}", f.x, f.y, f.color, f.intensity, f.radius)
                 .unwrap();
         }
         if !result.is_empty() {
-            let atom = gdk::Atom::intern("CLIPBOARD");
-            let clip = gtk::Clipboard::get(&atom);
-            clip.set_text(&result);
+            if let Some(display) = gdk::Display::default() {
+                let clip = display.clipboard();
+                clip.set_text(&result);
+            }
         }
     }
 
-    fn paste_row(&self) {
-        let frames = match frames_from_clipboard() {
-            Some(s) => s,
-            None => return,
-        };
-        let rows = self.tree.selection().selected_rows().0;
-        if rows.len() == 0 {
-            return;
-        }
-        if rows.len() == 1 {
-            // Paste starting from current row
-            let index = match rows.get(0).and_then(|path| path.indices().get(0).cloned()) {
+    fn paste_row(this: &Arc<Self>) {
+        let this = this.clone();
+        let paste_task = async move {
+            let frames = match frames_from_clipboard().await {
                 Some(s) => s,
                 None => return,
             };
-            for (frame, index) in frames.iter().zip(index..) {
-                let path = gtk::TreePath::from_indicesv(&[index]);
-                if let Some(iter) = self.store.iter(&path) {
-                    set_lit_frame_in_store(&self.store, &iter, frame);
-                }
+            let selection = this.model.selection();
+            let size = selection.size();
+            if size == 0 {
+                return;
             }
-        } else {
-            // Paste over any selected rows
-            let mut row_iter = rows.iter();
-            'outer: loop {
-                for frame in frames.iter() {
-                    let path = match row_iter.next() {
-                        Some(s) => s,
-                        None => break 'outer,
-                    };
-                    if let Some(iter) = self.store.iter(path) {
-                        set_lit_frame_in_store(&self.store, &iter, frame);
+            if size == 1 {
+                // Paste starting from current row
+                let index = selection.minimum();
+                for (frame, index) in frames.iter().zip(index..) {
+                    set_lit_frame_in_model(&this.model, index, frame);
+                }
+            } else {
+                // Paste over any selected rows
+                let mut iter = iter_bitset(&selection);
+                'outer: loop {
+                    for frame in frames.iter() {
+                        let index = match iter.next() {
+                            Some(s) => s,
+                            None => break 'outer,
+                        };
+                        set_lit_frame_in_model(&this.model, index, frame);
                     }
                 }
             }
-        }
+        };
+        glib::MainContext::default().spawn_local(paste_task);
     }
 
-    fn make_rclick_menu(self: Arc<Self>) -> gtk::Menu {
-        let menu = gtk::Menu::new();
-        let item = gtk::MenuItem::with_label("Copy");
+    fn update_paste_state(self: &Arc<Self>) {
         let this = self.clone();
-        item.connect_activate(move |_| {
-            this.copy_row();
-        });
-        item.show();
-        menu.append(&item);
-        let item = gtk::MenuItem::with_label("Paste");
-        item.connect_activate(move |_| {
-            self.paste_row();
-        });
-        item.show();
-        if frames_from_clipboard().is_none() {
-            item.set_sensitive(false);
-        }
-        menu.append(&item);
-        menu
+        let set_sensitivity_task = async move {
+            let frames = frames_from_clipboard().await;
+            if let Some(a) = crate::lookup_action(&this.lighting_actions, "paste") {
+                a.set_enabled(frames.is_some());
+            }
+        };
+        glib::MainContext::default().spawn_local(set_sensitivity_task);
     }
 
     fn enable_for_current(&self, enable: bool) {
@@ -332,7 +432,13 @@ impl SpriteLighting {
             }
         };
         self.bx.set_has_tooltip(false);
-        self.store.clear();
+        let model = self.model.model();
+        let list_store_model = model.as_ref()
+            .and_then(|x| x.downcast_ref::<gio::ListStore>())
+            .should();
+        if let Some(model) = list_store_model {
+            model.remove_all();
+        }
         // Resize lit frames to match sprite frames.
         // They may mismatch if the sprite was edited without updating lit.
         // It would be nice to do this on sprite load, but that would require
@@ -357,11 +463,11 @@ impl SpriteLighting {
 
         if let Some(sprite) = lit.sprite_mut(index) {
             self.enabled.set_active(true);
-            let store = &self.store;
-            for (i, frame) in sprite.frames_mut().iter().enumerate() {
-                let iter = store.append();
-                store.set_value(&iter, 0, &Value::from(&(i as u32)));
-                set_lit_frame_in_store(store, &iter, &frame);
+            if let Some(model) = list_store_model {
+                let frames = sprite.frames_mut().iter().enumerate()
+                    .map(|(i, frame)| LitFrameObject::new(frame, i as u32))
+                    .collect::<Vec<_>>();
+                model.extend_from_slice(&frames);
             }
         } else {
             self.enabled.set_active(false);
@@ -369,62 +475,120 @@ impl SpriteLighting {
     }
 }
 
-fn frames_from_clipboard() -> Option<Vec<anim_lit::Frame>> {
-    let atom = gdk::Atom::intern("CLIPBOARD");
-    let clip = gtk::Clipboard::get(&atom);
-    clip.wait_for_text()
-        .and_then(|x| {
-            let text = x.as_str();
-            text.split("\n")
-                .filter(|text| !text.is_empty())
-                .map(|text| {
-                    let mut tokens = text.split(", ");
-                    let frame = anim_lit::Frame {
-                        x: tokens.next()?.parse().ok()?,
-                        y: tokens.next()?.parse().ok()?,
-                        color: tokens.next()?.parse().ok()?,
-                        intensity: tokens.next()?.parse().ok()?,
-                        radius: tokens.next()?.parse().ok()?,
-                    };
-                    if tokens.next().is_some() {
-                        None
-                    } else {
-                        Some(frame)
-                    }
-                }).collect::<Option<Vec<_>>>()
-        })
-        .filter(|vec| !vec.is_empty())
-}
-
-fn lit_frame_from_store_iter(
-    store: &gtk::ListStore,
-    iter: &gtk::TreeIter,
-) -> Option<anim_lit::Frame> {
-    let color = store.value(iter, 1).get::<String>().ok()?;
-    let color = rgb_color_from_string(&color)?;
-    let x = store.value(iter, 2).get::<i32>().ok()?;
-    let y = store.value(iter, 3).get::<i32>().ok()?;
-    let intensity = store.value(iter, 4).get::<u32>().ok()?;
-    let radius = store.value(iter, 5).get::<u32>().ok()?;
-    Some(anim_lit::Frame {
-        x,
-        y,
-        color,
-        intensity,
-        radius,
+fn iter_bitset(bitset: &gtk::Bitset) -> impl Iterator<Item = u32> + use<'_> {
+    let (mut iter, mut first) = match gtk::BitsetIter::init_first(bitset) {
+        Some(s) => (Some(s.0), Some(s.1)),
+        None => (None, None),
+    };
+    std::iter::from_fn(move || {
+        if let Some(next) = first.take() {
+            return Some(next);
+        }
+        iter.as_mut()?.next()
     })
 }
 
-fn set_lit_frame_in_store(
-    store: &gtk::ListStore,
-    iter: &gtk::TreeIter,
+async fn frames_from_clipboard() -> Option<Vec<anim_lit::Frame>> {
+    let display = gdk::Display::default()?;
+    let clip = display.clipboard();
+    let text = clip.read_text_future().await.ok()??;
+    let text = text.as_str();
+    let result = text.split("\n")
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            let mut tokens = text.split(", ");
+            let frame = anim_lit::Frame {
+                x: tokens.next()?.parse().ok()?,
+                y: tokens.next()?.parse().ok()?,
+                color: tokens.next()?.parse().ok()?,
+                intensity: tokens.next()?.parse().ok()?,
+                radius: tokens.next()?.parse().ok()?,
+            };
+            if tokens.next().is_some() {
+                None
+            } else {
+                Some(frame)
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+#[derive(Properties, Default)]
+#[properties(wrapper_type = LitFrameObject)]
+pub struct LitFrameObjectImpl {
+    #[property(get, set)]
+    color: Cell<u32>,
+    #[property(get, set)]
+    x: Cell<i32>,
+    #[property(get, set)]
+    y: Cell<i32>,
+    #[property(get, set)]
+    intensity: Cell<u32>,
+    #[property(get, set)]
+    radius: Cell<u32>,
+    #[property(get, set)]
+    index: Cell<u32>,
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for LitFrameObjectImpl {
+    const NAME: &'static str = "AnimosityLitFrame";
+    type Type = LitFrameObject;
+}
+
+#[glib::derived_properties]
+impl ObjectImpl for LitFrameObjectImpl {}
+
+glib::wrapper! {
+    pub struct LitFrameObject(ObjectSubclass<LitFrameObjectImpl>);
+}
+
+impl LitFrameObject {
+    pub fn new(frame: &anim_lit::Frame, index: u32) -> Self {
+        glib::Object::builder()
+            .property("x", frame.x)
+            .property("y", frame.y)
+            .property("color", frame.color)
+            .property("intensity", frame.intensity)
+            .property("radius", frame.radius)
+            .property("index", index)
+            .build()
+    }
+}
+
+fn lit_frame_from_model(
+    model: &gtk::MultiSelection,
+    pos: u32,
+) -> Option<anim_lit::Frame> {
+    let item = model.item(pos)?;
+    let lit = item.downcast_ref::<LitFrameObject>()?;
+    Some(anim_lit::Frame {
+        x: lit.x(),
+        y: lit.y(),
+        color: lit.color(),
+        intensity: lit.intensity(),
+        radius: lit.radius(),
+    })
+}
+
+fn set_lit_frame_in_model(
+    model: &gtk::MultiSelection,
+    pos: u32,
     frame: &anim_lit::Frame,
-) {
-    store.set_value(iter, 1, &Value::from(&rgb_color_string(frame.color)));
-    store.set_value(iter, 2, &Value::from(&frame.x));
-    store.set_value(iter, 3, &Value::from(&frame.y));
-    store.set_value(iter, 4, &Value::from(&frame.intensity));
-    store.set_value(iter, 5, &Value::from(&frame.radius));
+) -> Option<()> {
+    let item = model.item(pos)?;
+    let lit = item.downcast_ref::<LitFrameObject>()?;
+    lit.set_x(frame.x);
+    lit.set_y(frame.y);
+    lit.set_color(frame.color);
+    lit.set_intensity(frame.intensity);
+    lit.set_radius(frame.radius);
+    Some(())
 }
 
 fn rgb_color_string(color: u32) -> String {
@@ -446,6 +610,7 @@ fn rgb_color_from_string(mut text: &str) -> Option<u32> {
     Some(red | (green << 8) | (blue << 16) | 0xff00_0000)
 }
 
+/*
 mod gtk_ext {
     use gtk::subclass::prelude::*;
     use gtk::prelude::*;
@@ -475,7 +640,7 @@ mod gtk_ext {
             (min + color_block_size, natural + color_block_size)
         }
 
-        fn render<P: glib::IsA<gtk::Widget>>(
+        fn render<P: IsA<gtk::Widget>>(
             &self,
             cr: &cairo::Context,
             widget: &P,
@@ -548,3 +713,4 @@ mod gtk_ext {
         }
     }
 }
+*/

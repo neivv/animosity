@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use anyhow::Context;
-use gio::prelude::*;
+use anyhow::{anyhow, Context};
 use gtk::prelude::*;
+use gtk::glib::signal::Propagation;
+use gtk::glib;
 use serde_derive::{Deserialize, Serialize};
 
 use crate::anim;
@@ -75,7 +76,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         }
     }
 
-    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    let window = gtk::Window::new();
 
     let inputs = FrameInputs::new(window.clone());
 
@@ -230,7 +231,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         };
         let (hd_fi, sd_fi) = split_frame_info_hd_sd(&frame_info, &checkboxes2);
 
-        let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
+        let (send, recv) = async_channel::unbounded();
         let files_arc = sprite_info.files.clone();
         let frame_scales = match inputs.scales().should() {
             Some(s) => s,
@@ -292,7 +293,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                             tex_id.0,
                             SpriteType::Hd,
                             None,
-                            |step| send.send(Progress::Progress(hd_step(step))).unwrap(),
+                            |step| send.send_blocking(Progress::Progress(hd_step(step))).unwrap(),
                         ).context("Import HD frames")?;
                     }
                     // SD
@@ -309,12 +310,12 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                             tex_id.0,
                             SpriteType::Sd,
                             grp_filename.as_ref().map(|x| &**x),
-                            |step| send.send(Progress::Progress(sd_step(step))).unwrap(),
+                            |step| send.send_blocking(Progress::Progress(sd_step(step))).unwrap(),
                         ).context("Import SD frames")?;
                     }
                     Ok(())
                 })).unwrap_or_else(|e| Err(error_from_panic(e)));
-                let _ = send2.send(Progress::Done(result.map(|()| frame_count)));
+                let _ = send2.send_blocking(Progress::Done(result.map(|()| frame_count)));
             });
         } else {
             // Ddsgrp
@@ -364,11 +365,11 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
                         tex_id.0,
                         scale,
                         linked_grp_path.as_deref(),
-                        |step| send.send(Progress::Progress(step)).unwrap(),
+                        |step| send.send_blocking(Progress::Progress(step)).unwrap(),
                     )?;
                     Ok(())
                 })).unwrap_or_else(|e| Err(error_from_panic(e)));
-                let _ = send2.send(Progress::Done(result.map(|()| frame_count)));
+                let _ = send2.send_blocking(Progress::Done(result.map(|()| frame_count)));
             });
         }
         let rest_of_ui = rest_of_ui2.clone();
@@ -381,58 +382,64 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         let waiting_for_thread = waiting_for_thread.clone();
         let sprite_info = sprite_info.clone();
         let files_arc = sprite_info.files.clone();
-        recv.attach(None, move |status| match status {
-            Progress::Done(result) => {
-                waiting_for_thread.set(false);
-                for part in rest_of_ui.borrow().iter() {
-                    part.set_sensitive(true);
+        let recv_task = async move {
+            let mut result = None;
+            while let Ok(status) = recv.recv().await {
+                match status {
+                    Progress::Done(res) => {
+                        result = Some(res);
+                        break;
+                    }
+                    Progress::Progress(step) => {
+                        progress.set_fraction(step as f64);
+                    }
                 }
-                match result {
-                    Ok(frame_count) => {
-                        let mut files = files_arc.lock();
-                        sprite_info.draw_clear_all();
-                        if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
-                            sprite_info.changed_ty(tex_id, &mut file);
-                        }
-                        drop(files);
-                        if let Some(a) = lookup_action(&sprite_info.sprite_actions, "is_dirty") {
-                            a.activate(Some(&true.to_variant()));
-                        }
+            }
+            waiting_for_thread.set(false);
+            for part in rest_of_ui.borrow().iter() {
+                part.set_sensitive(true);
+            }
+            match result.unwrap_or_else(|| Err(anyhow!("Thread died??"))) {
+                Ok(frame_count) => {
+                    let mut files = files_arc.lock();
+                    sprite_info.draw_clear_all();
+                    if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
+                        sprite_info.changed_ty(tex_id, &mut file);
+                    }
+                    drop(files);
+                    if let Some(a) = lookup_action(&sprite_info.sprite_actions, "is_dirty") {
+                        a.activate(Some(&true.to_variant()));
+                    }
 
-                        info_msg_box(&window, format!("Imported {} frames", frame_count));
-                        sprite_info.lighting.select_sprite(tex_id.0);
-                        window.close();
-                    }
-                    Err(e) => {
-                        let msg = format!("Unable to import frames: {:?}", e);
-                        error_msg_box(&window, msg);
-                    }
+                    info_msg_box(&window, format!("Imported {} frames", frame_count));
+                    sprite_info.lighting.select_sprite(tex_id.0);
+                    window.close();
                 }
-                glib::Continue(false)
+                Err(e) => {
+                    let msg = format!("Unable to import frames: {:?}", e);
+                    error_msg_box(&window, msg);
+                }
             }
-            Progress::Progress(step) => {
-                progress.set_fraction(step as f64);
-                glib::Continue(true)
-            }
-        });
+        };
+        glib::MainContext::default().spawn_local(recv_task);
     });
 
-    button_bx.pack_end(&cancel_button, false, false, 0);
-    button_bx.pack_end(&ok_button, false, false, 0);
+    button_bx.append(&ok_button);
+    button_bx.append(&cancel_button);
     let rest_bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    rest_bx.pack_start(inputs.widget(), false, false, 0);
-    rest_bx.pack_start(layers_bx, false, false, 0);
+    rest_bx.append(inputs.widget());
+    rest_bx.append(layers_bx);
     if let Some(sd_grp) = ddsgrp_make_linked_grp {
-        rest_bx.pack_start(sd_grp.widget(), false, false, 0);
+        rest_bx.append(sd_grp.widget());
     }
     if let Some(scale) = grp_scale_bx {
-        rest_bx.pack_start(&scale, false, false, 0);
+        rest_bx.append(&scale);
     }
     if let Some(ref check) = import_hd_checkbox {
-        rest_bx.pack_start(check.widget(), false, false, 0);
+        rest_bx.append(check.widget());
     }
     if let Some(ref check) = import_sd_checkbox {
-        rest_bx.pack_start(check.widget(), false, false, 0);
+        rest_bx.append(check.widget());
     }
     let bx = box_vertical(&[
         &rest_bx,
@@ -440,22 +447,25 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
         &button_bx,
     ]);
     *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
-    window.add(&bx);
-    window.set_border_width(10);
+    window.set_child(Some(&bx));
     window.set_default_width(350);
     if is_anim {
-        window.set_title(&format!("Import frames for image {}", tex_id.0));
+        window.set_title(Some(&format!("Import frames for image {}", tex_id.0)));
     } else {
         if let Some(filename) = ddsgrp_path.as_ref().and_then(|x| x.file_name()) {
-            window.set_title(&format!("Import frames of {}", filename.to_string_lossy()));
+            window.set_title(Some(&format!("Import frames of {}", filename.to_string_lossy())));
         }
     }
-    window.connect_delete_event(move |_, _| {
-        Inhibit(waiting_for_thread2.get())
+    window.connect_close_request(move |_| {
+        if waiting_for_thread2.get() {
+            Propagation::Stop
+        } else {
+            Propagation::Proceed
+        }
     });
     window.set_modal(true);
     window.set_transient_for(Some(parent));
-    window.show_all();
+    window.show();
 }
 
 /// Choice for SD anim -> grp generation
@@ -465,14 +475,15 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
 #[derive(Clone)]
 struct SdAnimGrpWidget {
     bx: gtk::Box,
-    radios: Vec<gtk::RadioButton>,
+    radios: Vec<gtk::CheckButton>,
     filename_entry: gtk::Entry,
 }
 
 impl SdAnimGrpWidget {
     pub fn new(files: &mut Files, sprite_id: usize) -> SdAnimGrpWidget {
-        let no_grp = gtk::RadioButton::with_label("Don't create");
-        let default_name = gtk::RadioButton::with_label_from_widget(&no_grp, "Default path");
+        let no_grp = gtk::CheckButton::with_label("Don't create");
+        let default_name = gtk::CheckButton::with_label("Default path");
+        default_name.set_group(Some(&no_grp));
         let default_grp_path = files.image_grp_path(sprite_id);
         if default_grp_path.is_some() {
             default_name.set_tooltip_text(Some(
@@ -484,7 +495,8 @@ impl SdAnimGrpWidget {
                 Uses a path derived from images.dat and images.tbl\n\
                 (Unable to get GRP path)"));
         }
-        let custom_name = gtk::RadioButton::with_label_from_widget(&no_grp, "Custom path");
+        let custom_name = gtk::CheckButton::with_label("Custom path");
+        custom_name.set_group(Some(&no_grp));
         let (filename_entry, filename_frame) = crate::int_entry::entry();
         filename_entry.set_sensitive(false);
         let bx = box_vertical(&[
@@ -634,7 +646,7 @@ impl FrameInputs {
             input_scale.widget(),
             &framedef_status,
         ]);
-        this.bx.pack_start(&inner_bx, false, false, 0);
+        this.bx.append(&inner_bx);
 
         this.input_state.add_new();
         this.input_controls.borrow_mut().push(FrameInputControls {

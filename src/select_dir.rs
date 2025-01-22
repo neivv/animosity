@@ -9,6 +9,7 @@ use app_dirs::{self, AppDataType, AppInfo};
 use serde_json;
 
 use gtk::prelude::*;
+use gtk::{glib, gio};
 
 use crate::int_entry;
 
@@ -89,9 +90,10 @@ fn create_common() -> (gtk::Box, gtk::Entry, gtk::Button) {
     //entry.set_sensitive(false);
     let _ = entry.set_property("editable", &false);
     frame.set_vexpand(false);
+    frame.set_hexpand(true);
     frame.set_valign(gtk::Align::End);
-    bx.pack_start(&frame, true, true, 0);
-    bx.pack_start(&button, false, false, 0);
+    bx.append(&frame);
+    bx.append(&button);
     (bx, entry, button)
 }
 
@@ -107,19 +109,26 @@ impl SelectDir {
         let (bx, entry, button) = create_common();
         if let Some(name) = filename {
             entry.set_text(&name);
-            entry.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
+            move_cursor_to_end(&entry);
         }
 
         let e = entry.clone();
         let w = window.clone();
+        let select_id = Rc::new(select_id);
         button.connect_clicked(move |_| {
             let dir = e.text();
-            if let Some(path) = choose_dir_dialog(&w, &dir) {
-                let val = path.to_string_lossy();
-                e.set_text(&val);
-                e.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
-                set_config_entry(&select_id, &*val);
-            }
+            let e = e.clone();
+            let w = w.clone();
+            let select_id = select_id.clone();
+            let task = async move {
+                if let Some(path) = choose_dir_dialog(&w, &dir).await {
+                    let val = path.to_string_lossy();
+                    e.set_text(&val);
+                    move_cursor_to_end(&e);
+                    set_config_entry(&select_id, &*val);
+                }
+            };
+            glib::MainContext::default().spawn_local(task);
         });
 
         SelectDir {
@@ -159,7 +168,7 @@ impl SelectFile {
         let (bx, entry, button) = create_common();
         if let Some(name) = filename {
             entry.set_text(&name);
-            entry.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
+            move_cursor_to_end(&entry);
         }
 
         let on_change_handlers: Rc<RefCell<Vec<Box<dyn FnMut(&str) + 'static>>>> =
@@ -167,19 +176,29 @@ impl SelectFile {
         let e = entry.clone();
         let w = window.clone();
         let o = on_change_handlers.clone();
+        let select_id = Rc::new(select_id);
         button.connect_clicked(move |_| {
             let dir = e.text();
             let dir = Path::new(&*dir).parent().map(|x| x.to_string_lossy().into_owned());
-            if let Some(path) = choose_file_dialog(&w, &dir, filter_name, filter_pattern) {
-                let val = path.to_string_lossy();
-                e.set_text(&val);
-                e.emit_move_cursor(gtk::MovementStep::BufferEnds, 1, false);
-                set_config_entry(&select_id, &*val);
-                let mut handlers = o.borrow_mut();
-                for h in handlers.iter_mut() {
-                    h(&val);
+            let e = e.clone();
+            let o = o.clone();
+            let w = w.clone();
+            let select_id = select_id.clone();
+            let task = async move {
+                if let Some(path) =
+                    choose_file_dialog(&w, &dir, filter_name, filter_pattern).await
+                {
+                    let val = path.to_string_lossy();
+                    e.set_text(&val);
+                    move_cursor_to_end(&e);
+                    set_config_entry(&select_id, &*val);
+                    let mut handlers = o.borrow_mut();
+                    for h in handlers.iter_mut() {
+                        h(&val);
+                    }
                 }
-            }
+            };
+            glib::MainContext::default().spawn_local(task);
         });
 
         SelectFile {
@@ -202,7 +221,11 @@ impl SelectFile {
     }
 }
 
-fn choose_file_dialog(
+fn move_cursor_to_end(entry: &gtk::Entry) {
+    entry.set_position(-1);
+}
+
+async fn choose_file_dialog(
     parent: &gtk::Window,
     dir: &Option<String>,
     name: &str,
@@ -216,7 +239,8 @@ fn choose_file_dialog(
         Some("Cancel")
     );
     if let Some(ref dir) = *dir {
-        dialog.set_current_folder(&dir);
+        let file = gio::File::for_path(&dir);
+        let _ = dialog.set_current_folder(Some(&file));
     }
     dialog.set_select_multiple(false);
     let filter = gtk::FileFilter::new();
@@ -227,17 +251,24 @@ fn choose_file_dialog(
     filter.add_pattern("*.*");
     filter.set_name(Some("All files"));
     dialog.add_filter(&filter);
-    let result: gtk::ResponseType = dialog.run().into();
-    let result = if result == gtk::ResponseType::Accept {
-        dialog.filename()
+
+    let (send, recv) = async_channel::unbounded();
+    dialog.connect_response(move |_, response| {
+        let _ = send.send_blocking(response);
+    });
+    dialog.show();
+    let res = recv.recv().await.ok()?;
+
+    let result = if res == gtk::ResponseType::Accept {
+        let file = dialog.file();
+        file.and_then(|x| x.path())
     } else {
         None
     };
-    dialog.destroy();
     result
 }
 
-fn choose_dir_dialog(parent: &gtk::Window, dir: &str) -> Option<PathBuf> {
+async fn choose_dir_dialog(parent: &gtk::Window, dir: &str) -> Option<PathBuf> {
     let dialog = gtk::FileChooserNative::new(
         Some("Select folder..."),
         Some(parent),
@@ -245,14 +276,22 @@ fn choose_dir_dialog(parent: &gtk::Window, dir: &str) -> Option<PathBuf> {
         Some("Select"),
         Some("Cancel")
     );
-    dialog.set_current_folder(dir);
+    let file = gio::File::for_path(&dir);
+    let _ = dialog.set_current_folder(Some(&file));
     dialog.set_select_multiple(false);
-    let result: gtk::ResponseType = dialog.run().into();
-    let result = if result == gtk::ResponseType::Accept {
-        dialog.filename()
+
+    let (send, recv) = async_channel::unbounded();
+    dialog.connect_response(move |_, response| {
+        let _ = send.send_blocking(response);
+    });
+    dialog.show();
+    let res = recv.recv().await.ok()?;
+
+    let result = if res == gtk::ResponseType::Accept {
+        let file = dialog.file();
+        file.and_then(|x| x.path())
     } else {
         None
     };
-    dialog.destroy();
     result
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gio::prelude::*;
+use gtk::gio::prelude::*;
 use gtk::prelude::*;
 
 use crate::int_entry::{IntSize, IntEntry};
@@ -38,13 +38,13 @@ pub fn dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
         images_dat_entries = files.images_dat_entries();
     }
 
-    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    let window = gtk::Window::new();
 
     let readme_msg = gtk::Label::new(Some("\
     Please see the section about \"Adding more sprites [...]\" in readme.txt first to make \
     sure the other necessary steps are taken.\
     "));
-    readme_msg.set_line_wrap(true);
+    readme_msg.set_wrap(true);
     readme_msg.set_halign(gtk::Align::Start);
 
     let lit_entries_num = lit_entries.unwrap_or(999);
@@ -60,7 +60,7 @@ pub fn dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
     }
 
     let entry_msg = gtk::Label::new(Some(&entry_msg));
-    entry_msg.set_line_wrap(true);
+    entry_msg.set_wrap(true);
     entry_msg.set_halign(gtk::Align::Start);
 
     let entry_count_label = gtk::Label::new(Some("New entry amount"));
@@ -115,11 +115,10 @@ pub fn dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::ApplicationWindow) {
             &cancel_button,
         ]),
     ]);
-    window.add(&bx);
-    window.set_border_width(10);
+    window.set_child(Some(&bx));
     window.set_default_width(350);
-    window.set_title("Edit sprite count");
+    window.set_title(Some("Edit sprite count"));
     window.set_modal(true);
     window.set_transient_for(Some(parent));
-    window.show_all();
+    window.show();
 }

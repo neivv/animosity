@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use anyhow::Context;
-use gtk;
+use anyhow::{anyhow, Context};
+use gtk::glib;
+use gtk::glib::signal::Propagation;
 use gtk::prelude::*;
 
 use crate::frame_export::{self, LayerExportMode};
@@ -41,7 +42,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
     };
     let layer_names = file.layer_names().into_owned();
 
-    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    let window = gtk::Window::new();
 
     let dir_select = select_dir::SelectDir::new(&window, "export_frames");
     let filename_bx = label_section("Output directory", &dir_select.widget());
@@ -270,7 +271,7 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
         };
 
         let framedef: PathBuf = String::from(framedef_entry.text()).into();
-        let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
+        let (send, recv) = async_channel::unbounded();
         let files_arc = s.files.clone();
         let frame_count;
         let path2 = path.clone();
@@ -313,10 +314,10 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
                         &framedef,
                         &layers_to_export,
                         single_image,
-                        |step| send.send(Progress::Progress(step)).unwrap(),
+                        |step| send.send_blocking(Progress::Progress(step)).unwrap(),
                     )
                 })).unwrap_or_else(|e| Err(error_from_panic(e)));
-                let _ = send2.send(Progress::Done(result));
+                let _ = send2.send_blocking(Progress::Done(result));
             });
         } else {
             let prefix = grp_prefix.as_ref()
@@ -337,10 +338,10 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
                         &prefix,
                         &framedef,
                         single_image,
-                        |step| send.send(Progress::Progress(step)).unwrap(),
+                        |step| send.send_blocking(Progress::Progress(step)).unwrap(),
                     )
                 })).unwrap_or_else(|e| Err(error_from_panic(e)));
-                let _ = send2.send(Progress::Done(result));
+                let _ = send2.send_blocking(Progress::Done(result));
             });
         }
         let rest_of_ui = rest_of_ui2.clone();
@@ -351,36 +352,42 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
             part.set_sensitive(false);
         }
         let waiting_for_thread = waiting_for_thread.clone();
-        recv.attach(None, move |status| match status {
-            Progress::Done(result) => {
-                waiting_for_thread.set(false);
-                for part in rest_of_ui.borrow().iter() {
-                    part.set_sensitive(true);
-                }
-                match result {
-                    Ok(()) => {
-                        let msg = format!(
-                            "Wrote {} frames to {}",
-                            frame_count, path.to_string_lossy(),
-                        );
-                        info_msg_box(&window, &msg);
-                        window.close();
+        let recv_task = async move {
+            let mut result = None;
+            while let Ok(status) = recv.recv().await {
+                match status {
+                    Progress::Done(res) => {
+                        result = Some(res);
+                        break;
                     }
-                    Err(e) => {
-                        let msg = format!("Unable to export frames: {:?}", e);
-                        error_msg_box(&window, &msg);
+                    Progress::Progress(step) => {
+                        progress.set_fraction(step as f64);
                     }
                 }
-                glib::Continue(false)
             }
-            Progress::Progress(step) => {
-                progress.set_fraction(step as f64);
-                glib::Continue(true)
+            waiting_for_thread.set(false);
+            for part in rest_of_ui.borrow().iter() {
+                part.set_sensitive(true);
             }
-        });
+            match result.unwrap_or_else(|| Err(anyhow!("Thread died??"))) {
+                Ok(()) => {
+                    let msg = format!(
+                        "Wrote {} frames to {}",
+                        frame_count, path.to_string_lossy(),
+                    );
+                    info_msg_box(&window, &msg);
+                    window.close();
+                }
+                Err(e) => {
+                    let msg = format!("Unable to export frames: {:?}", e);
+                    error_msg_box(&window, &msg);
+                }
+            }
+        };
+        glib::MainContext::default().spawn_local(recv_task);
     });
-    button_bx.pack_end(&cancel_button, false, false, 0);
-    button_bx.pack_end(&ok_button, false, false, 0);
+    button_bx.append(&ok_button);
+    button_bx.append(&cancel_button);
     let opt_error_label;
     let mut input_parts: Vec<&dyn BoxableWidget>  = vec![
         &filename_bx,
@@ -399,22 +406,25 @@ pub fn frame_export_dialog(this: &Arc<SpriteInfo>, parent: &gtk::ApplicationWind
         &button_bx,
     ]);
     *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
-    window.add(&bx);
-    window.set_border_width(10);
+    window.set_child(Some(&bx));
     window.set_default_width(350);
     if is_anim {
-        window.set_title(&format!("Export frames of {:?} image {}", tex_id.1, tex_id.0));
+        window.set_title(Some(&format!("Export frames of {:?} image {}", tex_id.1, tex_id.0)));
     } else {
         if let Some(filename) = file.path().file_name() {
-            window.set_title(&format!("Export frames of {}", filename.to_string_lossy()));
+            window.set_title(Some(&format!("Export frames of {}", filename.to_string_lossy())));
         }
     }
-    window.connect_delete_event(move |_, _| {
-        Inhibit(waiting_for_thread2.get())
+    window.connect_close_request(move |_| {
+        if waiting_for_thread2.get() {
+            Propagation::Stop
+        } else {
+            Propagation::Proceed
+        }
     });
     window.set_modal(true);
     window.set_transient_for(Some(parent));
-    window.show_all();
+    window.show();
 }
 
 #[derive(Clone)]

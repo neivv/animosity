@@ -5,3 +5,11 @@ frame:disabled {
 frame {
     background-color: #ffffff;
 }
+
+cell {
+    padding: 0;
+}
+
+.cell-entry-disabled {
+    color: #000000;
+}

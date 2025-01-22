@@ -2,8 +2,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gio::prelude::*;
+use anyhow::anyhow;
 use gtk::prelude::*;
+use gtk::glib::signal::Propagation;
+use gtk::glib;
 
 use crate::anim;
 use crate::combo_box_enum::ComboBoxEnum;
@@ -60,7 +62,7 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
         grp_scale = file.grp().map(|x| x.scale).unwrap_or(1);
     }
 
-    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    let window = gtk::Window::new();
 
     let grp_select = Rc::new(
         select_dir::SelectFile::new(&window, "import_grp", "StarCraft GRP sprite", "*.grp")
@@ -151,7 +153,7 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
         if waiting_for_thread.get() {
             return;
         }
-        let (send, recv) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
+        let (send, recv) = async_channel::unbounded();
         let files_arc = sprite_info.files.clone();
         let format = match format_combo_box.active() {
             Some(o) => o,
@@ -223,10 +225,10 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
                         &palette,
                         format,
                         use_teamcolor,
-                        |step| send2.send(Progress::Progress(step)).unwrap(),
+                        |step| send2.send_blocking(Progress::Progress(step)).unwrap(),
                     )
                 })).unwrap_or_else(|e| Err(error_from_panic(e)));
-                let _ = send.send(Progress::Done(result.map(|()| frame_count)));
+                let _ = send.send_blocking(Progress::Done(result.map(|()| frame_count)));
             });
         } else {
             std::thread::spawn(move || {
@@ -240,10 +242,10 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
                         &palette,
                         format,
                         grp_scale,
-                        |step| send2.send(Progress::Progress(step)).unwrap(),
+                        |step| send2.send_blocking(Progress::Progress(step)).unwrap(),
                     )
                 })).unwrap_or_else(|e| Err(error_from_panic(e)));
-                let _ = send.send(Progress::Done(result.map(|()| frame_count)));
+                let _ = send.send_blocking(Progress::Done(result.map(|()| frame_count)));
             });
         }
         let rest_of_ui = rest_of_ui2.clone();
@@ -256,40 +258,47 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
         let waiting_for_thread = waiting_for_thread.clone();
         let sprite_info = sprite_info.clone();
         let files_arc = sprite_info.files.clone();
-        recv.attach(None, move |status| match status {
-            Progress::Done(result) => {
-                waiting_for_thread.set(false);
-                for part in rest_of_ui.borrow().iter() {
-                    part.set_sensitive(true);
+        let recv_task = async move {
+            let mut result = None;
+            while let Ok(status) = recv.recv().await {
+                match status {
+                    Progress::Done(res) => {
+                        result = Some(res);
+                        break;
+                    }
+                    Progress::Progress(step) => {
+                        progress.set_fraction(step as f64);
+                    }
                 }
-                match result {
-                    Ok(frame_count) => {
-                        let mut files = files_arc.lock();
-                        sprite_info.draw_clear_all();
-                        if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
-                            sprite_info.changed_ty(tex_id, &mut file);
-                        }
-                        drop(files);
-                        if let Some(a) = lookup_action(&sprite_info.sprite_actions, "is_dirty") {
-                            a.activate(Some(&true.to_variant()));
-                        }
+            }
 
-                        info_msg_box(&window, format!("Imported {} frames", frame_count));
-                        sprite_info.lighting.select_sprite(tex_id.0);
-                        window.close();
+            waiting_for_thread.set(false);
+            for part in rest_of_ui.borrow().iter() {
+                part.set_sensitive(true);
+            }
+            match result.unwrap_or_else(|| Err(anyhow!("Thread died??"))) {
+                Ok(frame_count) => {
+                    let mut files = files_arc.lock();
+                    sprite_info.draw_clear_all();
+                    if let Ok(mut file) = files.file(tex_id.0, tex_id.1) {
+                        sprite_info.changed_ty(tex_id, &mut file);
                     }
-                    Err(e) => {
-                        let msg = format!("Unable to import frames: {:?}", e);
-                        error_msg_box(&window, msg);
+                    drop(files);
+                    if let Some(a) = lookup_action(&sprite_info.sprite_actions, "is_dirty") {
+                        a.activate(Some(&true.to_variant()));
                     }
+
+                    info_msg_box(&window, format!("Imported {} frames", frame_count));
+                    sprite_info.lighting.select_sprite(tex_id.0);
+                    window.close();
                 }
-                glib::Continue(false)
+                Err(e) => {
+                    let msg = format!("Unable to import frames: {:?}", e);
+                    error_msg_box(&window, msg);
+                }
             }
-            Progress::Progress(step) => {
-                progress.set_fraction(step as f64);
-                glib::Continue(true)
-            }
-        });
+        };
+        glib::MainContext::default().spawn_local(recv_task);
     });
 
     let ok = ok_button.clone();
@@ -301,14 +310,14 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
         update_ok_sensitive(&ok, &grp_select2, &custom_palette_select2, &palette_combo_box2);
     });
 
-    button_bx.pack_end(&cancel_button, false, false, 0);
-    button_bx.pack_end(&ok_button, false, false, 0);
+    button_bx.append(&ok_button);
+    button_bx.append(&cancel_button);
     let rest_bx = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    rest_bx.pack_start(&grp_section, false, false, 0);
-    rest_bx.pack_start(&palette_section, false, false, 0);
-    rest_bx.pack_start(&encode_format_bx, false, false, 0);
+    rest_bx.append(&grp_section);
+    rest_bx.append(&palette_section);
+    rest_bx.append(&encode_format_bx);
     if let Some(teamcolor_check) = teamcolor_check {
-        rest_bx.pack_start(teamcolor_check.widget(), false, false, 0);
+        rest_bx.append(teamcolor_check.widget());
     }
     let bx = box_vertical(&[
         &rest_bx,
@@ -316,22 +325,25 @@ pub fn grp_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicatio
         &button_bx,
     ]);
     *rest_of_ui.borrow_mut() = vec![rest_bx, button_bx];
-    window.add(&bx);
-    window.set_border_width(10);
+    window.set_child(Some(&bx));
     window.set_default_width(350);
     if is_anim {
-        window.set_title(&format!("Import GRP to {:?} image {}", tex_id.1, tex_id.0));
+        window.set_title(Some(&format!("Import GRP to {:?} image {}", tex_id.1, tex_id.0)));
     } else {
         if let Some(filename) = path.file_name() {
-            window.set_title(&format!("Import GRP to {}", filename.to_string_lossy()));
+            window.set_title(Some(&format!("Import GRP to {}", filename.to_string_lossy())));
         }
     }
-    window.connect_delete_event(move |_, _| {
-        Inhibit(waiting_for_thread2.get())
+    window.connect_close_request(move |_| {
+        if waiting_for_thread2.get() {
+            Propagation::Stop
+        } else {
+            Propagation::Proceed
+        }
     });
     window.set_modal(true);
     window.set_transient_for(Some(parent));
-    window.show_all();
+    window.show();
 }
 
 fn update_ok_sensitive(

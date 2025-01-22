@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(deprecated)]
 
 #[macro_use] extern crate anyhow;
 #[macro_use] extern crate glium;
@@ -41,8 +42,10 @@ use std::sync::{Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::rc::Rc;
 
-use gio::prelude::*;
 use gtk::prelude::*;
+use gtk::glib::signal::Propagation;
+use gtk::{cairo, gio, glib, gdk};
+use gtk::glib::Variant;
 
 use anyhow::{Context, Error};
 use glium::texture::{Texture1d, Texture2d};
@@ -89,17 +92,13 @@ fn init_panic_handler() {
         };
         writeln!(msg, "{}", panic_msg).unwrap();
         error!("{}", msg);
-        let dialog = gtk::MessageDialog::new::<gtk::Window>(
-            None,
-            gtk::DialogFlags::MODAL,
-            gtk::MessageType::Error,
-            gtk::ButtonsType::None,
-            &msg,
-        );
-        dialog.add_button("Ok", gtk::ResponseType::Ok);
-        dialog.set_title("Crash");
-        dialog.run();
-        dialog.close();
+
+        let dialog = gtk::AlertDialog::builder()
+            .buttons(&["Ok"][..])
+            .modal(true)
+            .message(&msg)
+            .build();
+        dialog.show(gtk::Window::NONE);
         std::process::exit(3);
     }));
 }
@@ -111,11 +110,14 @@ fn main() {
     let _ = init_log();
     let name = format!("animosity.pid_{}", std::process::id());
     let app = gtk::Application::new(Some(&*name), gio::ApplicationFlags::HANDLES_COMMAND_LINE);
+    app.connect_command_line(|_, _| {
+        0
+    });
     app.connect_startup(|app| {
         let ui = create_ui(app);
         create_actions(app, &ui.main_window.clone().upcast());
-        ui.main_window.show_all();
-        ui.info.lighting_expander.emit_activate();
+        ui.main_window.set_default_size(1000, 600);
+        ui.main_window.show();
         UI.with(|x| {
             *x.borrow_mut() = Some(Rc::new(ui));
         });
@@ -169,7 +171,7 @@ impl Ui {
             self.list.list.push(&name);
         }
         self.list.list.columns_autosize();
-        self.main_window.set_title(&title(files.root_path(), false));
+        self.main_window.set_title(Some(&title(files.root_path(), false)));
     }
 }
 
@@ -198,13 +200,12 @@ impl ScrolledList {
         let col = gtk::TreeViewColumn::new();
         let renderer = gtk::CellRendererText::new();
         CellLayoutExt::pack_end(&col, &renderer, true);
-        TreeViewColumnExt::add_attribute(&col, &renderer, "text", 0);
+        col.add_attribute(&renderer, "text", 0);
         list.append_column(&col);
         list.set_headers_visible(false);
 
-        let none: Option<&gtk::Adjustment> = None;
-        let root = gtk::ScrolledWindow::new(none, none);
-        root.add(&list);
+        let root = gtk::ScrolledWindow::new();
+        root.set_child(Some(&list));
         root.set_overlay_scrolling(false);
         ScrolledList {
             root,
@@ -218,9 +219,9 @@ impl ScrolledList {
     }
 
     fn select(&self, index: usize) {
-        let path = gtk::TreePath::from_indicesv(&[index as i32]);
+        let path = gtk::TreePath::from_indices(&[index as i32]);
         let none: Option<&gtk::TreeViewColumn> = None;
-        self.list.set_cursor(&path, none, false);
+        TreeViewExt::set_cursor(&self.list, &path, none, false);
     }
 
     fn columns_autosize(&self) {
@@ -245,7 +246,7 @@ impl SpriteList {
         let info = linked_info.clone();
         list.list.connect_cursor_changed(move |s| {
             let sprite = s.selection().selected()
-                .and_then(|(model, iter)| model.path(&iter))
+                .map(|(model, iter)| model.path(&iter))
                 .and_then(|path| path.indices().get(0).cloned());
             if let Some(index) = sprite {
                 info.select_sprite(index as usize);
@@ -329,15 +330,15 @@ impl SpriteValues {
         relations.set_margin_start(2);
         relations.set_margin_end(2);
         bx.set_sensitive(false);
-        bx.pack_start(&ref_enable, false, false, 0);
-        bx.pack_start(ref_index.widget(), false, false, 0);
-        bx.pack_start(&texture_dimensions, false, false, 0);
-        bx.pack_start(&frame_count_label, false, false, 0);
-        bx.pack_start(&unk3_label, false, false, 0);
-        unk3_bx.pack_start(width.widget(), true, true, 0);
-        unk3_bx.pack_start(height.widget(), true, true, 0);
-        bx.pack_start(&unk3_bx, false, false, 0);
-        bx.pack_start(&relations, false, false, 0);
+        bx.append(&ref_enable);
+        bx.append(ref_index.widget());
+        bx.append(&texture_dimensions);
+        bx.append(&frame_count_label);
+        bx.append(&unk3_label);
+        unk3_bx.append(width.widget());
+        unk3_bx.append(height.widget());
+        bx.append(&unk3_bx);
+        bx.append(&relations);
         SpriteValues {
             bx,
             ref_index,
@@ -480,28 +481,28 @@ pub enum SpriteType {
 impl SpriteSelector {
     fn new(sprite_actions: gio::ActionGroup) -> SpriteSelector {
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let sd = gtk::RadioButton::with_label("SD");
-        let hd = gtk::RadioButton::with_label_from_widget(&sd, "HD");
-        let hd2 = gtk::RadioButton::with_label_from_widget(&sd, "HD2");
+        let sd = gtk::CheckButton::with_label("SD");
+        let hd = gtk::CheckButton::with_label("HD");
+        let hd2 = gtk::CheckButton::with_label("HD2");
         let list = ScrolledList::new();
         list.root.set_min_content_height(200);
         list.root.set_min_content_width(80);
         list.list.connect_cursor_changed(move |s| {
             let index = s.selection().selected()
-                .and_then(|(model, iter)| model.path(&iter))
+                .map(|(model, iter)| model.path(&iter))
                 .and_then(|path| path.indices().get(0).cloned());
             if let Some(index) = index {
                 let variant = (index as u32).to_variant();
                 sprite_actions.activate_action("select_layer", Some(&variant));
             }
         });
-        sd.set_action_name(Some("sprite.select_sd"));
-        hd.set_action_name(Some("sprite.select_hd"));
-        hd2.set_action_name(Some("sprite.select_hd2"));
-        bx.pack_start(&sd, false, false, 0);
-        bx.pack_start(&hd, false, false, 0);
-        bx.pack_start(&hd2, false, false, 0);
-        bx.pack_start(&list.root, false, false, 0);
+        sd.set_detailed_action_name("sprite.select_sd_hd::sd");
+        hd.set_detailed_action_name("sprite.select_sd_hd::hd");
+        hd2.set_detailed_action_name("sprite.select_sd_hd::hd2");
+        bx.append(&sd);
+        bx.append(&hd);
+        bx.append(&hd2);
+        bx.append(&list.root);
         SpriteSelector {
             bx,
             list,
@@ -525,16 +526,22 @@ pub struct SpriteInfo {
     draw_area: gtk::DrawingArea,
     draw_clear_requests: RefCell<Vec<TextureId>>,
     lighting: Arc<widget_lighting::SpriteLighting>,
-    lighting_expander: gtk::Expander,
     render_settings: Rc<render_settings::RenderSettingsWidget>,
 }
 
 fn lookup_action<G: IsA<gio::ActionMap>>(group: &G, name: &str) -> Option<gio::SimpleAction> {
-    group.lookup_action(name).and_then(|x| x.downcast::<gio::SimpleAction>().ok())
+    let result = group.lookup_action(name).and_then(|x| x.downcast::<gio::SimpleAction>().ok());
+    if result.is_none() {
+        warn!("Looked up nonexisting action {name}");
+    }
+    result
 }
 
 impl SpriteInfo {
-    fn new(file_shared: &Arc<Mutex<files::Files>>) -> Arc<SpriteInfo> {
+    fn new(
+        file_shared: &Arc<Mutex<files::Files>>,
+        window: &gtk::ApplicationWindow,
+    ) -> Arc<SpriteInfo> {
         use crate::ui_helpers::*;
 
         let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -546,10 +553,12 @@ impl SpriteInfo {
         let selector = SpriteSelector::new(sprite_actions.clone().upcast());
         let values = SpriteValues::new();
         let draw_area = gtk::DrawingArea::new();
-        data_bx.pack_start(&selector.widget(), false, false, 0);
-        data_bx.pack_start(&values.widget(), false, false, 0);
-        sprite_bx.pack_start(&data_bx, false, false, 0);
-        sprite_bx.pack_start(&draw_area, true, true, 0);
+        data_bx.append(&selector.widget());
+        data_bx.append(&values.widget());
+        data_bx.set_hexpand(false);
+        sprite_bx.append(&data_bx);
+        draw_area.set_hexpand(true);
+        sprite_bx.append(&draw_area);
         let files = gtk::TextView::new();
         let none: Option<&gtk::TextTagTable> = None;
         let file_list = gtk::TextBuffer::new(none);
@@ -562,20 +571,21 @@ impl SpriteInfo {
         // There is expander.set_resize_toplevel, but it assumes the expander is being used
         // vertically ;_;
         let light2 = lighting.clone();
+        let window = window.clone();
         let expander_toggled = Rc::new(move |expander: &gtk::Expander, grow| {
             let (_, size) = light2.widget().preferred_size();
-            let (_, expander_width) = expander.preferred_width();
-            if let Some(window) = expander.window() {
-                let width = window.width();
-                let height = window.height();
-                let new_w = if grow {
-                    width + (size.width - expander_width).max(0)
-                } else {
-                    width - (size.width - expander_width).max(0)
-                };
-                window.resize(new_w, height);
-            }
+            let (_, expander_size) = expander.preferred_size();
+            let expander_width = expander_size.width();
+            let width = window.width();
+            let height = window.height();
+            let new_w = if grow {
+                width + (size.width() - expander_width).max(0)
+            } else {
+                width - (size.width() - expander_width).max(0)
+            };
+            window.set_default_size(new_w, height);
         });
+        expander.set_expanded(true);
         let expander_toggled2 = expander_toggled.clone();
         expander.connect_activate(move |expander| {
             // This is ran before the state changes from activation
@@ -591,7 +601,7 @@ impl SpriteInfo {
             }
             expander_toggled(expander, false);
         });
-        expander.add(&lighting.widget());
+        expander.set_child(Some(&lighting.widget()));
         let render_settings = render_settings::RenderSettingsWidget::new();
 
         let files_bx = box_horizontal(&[
@@ -599,10 +609,13 @@ impl SpriteInfo {
             render_settings.widget(),
         ]);
 
-        bx.pack_start(&sprite_bx, true, true, 0);
-        bx.pack_start(&files_bx, false, false, 0);
-        bx1.pack_start(&bx, true, true, 0);
-        bx1.pack_start(&expander, false, false, 0);
+        sprite_bx.set_vexpand(true);
+        bx.append(&sprite_bx);
+        bx.append(&files_bx);
+        bx.set_hexpand(true);
+        bx1.append(&bx);
+        expander.set_hexpand(false);
+        bx1.append(&expander);
         let result = Arc::new(SpriteInfo {
             bx: bx1,
             file_list,
@@ -615,7 +628,6 @@ impl SpriteInfo {
             draw_area: draw_area.clone(),
             draw_clear_requests: RefCell::new(Vec::new()),
             lighting,
-            lighting_expander: expander,
             render_settings,
         });
         SpriteInfo::create_sprite_actions(&result, &result.sprite_actions.clone().upcast());
@@ -623,11 +635,10 @@ impl SpriteInfo {
 
         let this = result.clone();
         let gl: Rc<RefCell<Option<RenderState>>> = Rc::new(RefCell::new(None));
-        draw_area.connect_draw(move |s, cairo| {
+        draw_area.set_draw_func(move |_s, cairo, width, height| {
             let mut gl = gl.borrow_mut();
-            let rect = s.allocation();
             let render_state = gl.get_or_insert_with(|| {
-                RenderState::new(rect.width() as u32, rect.height() as u32)
+                RenderState::new(width as u32, height as u32)
             });
             {
                 let mut clear_reqs = this.draw_clear_requests.borrow_mut();
@@ -640,7 +651,7 @@ impl SpriteInfo {
                     }
                 }
             }
-            render_state.resize_buf(rect.width() as u32, rect.height() as u32);
+            render_state.resize_buf(width as u32, height as u32);
             let result = this.render_sprite(render_state);
             match result {
                 Ok(()) => {
@@ -673,7 +684,6 @@ impl SpriteInfo {
                     }
                 }
             }
-            Inhibit(true)
         });
 
         result
@@ -815,21 +825,37 @@ impl SpriteInfo {
             group.add_action(&action);
             action
         }
+        fn action_stateful<F>(
+            group: &gio::ActionMap,
+            name: &str,
+            enabled: bool,
+            state: &str,
+            fun: F,
+        ) -> gio::SimpleAction
+        where F: Fn(&gio::SimpleAction, Option<&glib::Variant>) + 'static
+        {
+            let param_ty = glib::VariantTy::new("s").unwrap();
+            let action =
+                gio::SimpleAction::new_stateful(name, Some(&param_ty), &Variant::from(state));
+            action.set_enabled(enabled);
+            action.connect_change_state(fun);
+            group.add_action(&action);
+            action
+        }
         let s = this.clone();
-        action(group, "select_sd", false, None, move |_, _| {
-            s.selected_type.set(SpriteType::Sd);
-            s.changed_type_from_event();
-            s.draw_area.queue_draw();
-        });
-        let s = this.clone();
-        action(group, "select_hd", false, None, move |_, _| {
-            s.selected_type.set(SpriteType::Hd);
-            s.changed_type_from_event();
-            s.draw_area.queue_draw();
-        });
-        let s = this.clone();
-        action(group, "select_hd2", false, None, move |_, _| {
-            s.selected_type.set(SpriteType::Hd2);
+        action_stateful(group, "select_sd_hd", false, "sd", move |act, param| {
+            let param = match param {
+                Some(s) => s,
+                None => return,
+            };
+            act.set_state(param);
+            let ty = match param.get::<String>().as_deref() {
+                Some("sd") => SpriteType::Sd,
+                Some("hd") => SpriteType::Hd,
+                Some("hd2") => SpriteType::Hd2,
+                _ => SpriteType::Sd,
+            };
+            s.selected_type.set(ty);
             s.changed_type_from_event();
             s.draw_area.queue_draw();
         });
@@ -917,6 +943,14 @@ impl SpriteInfo {
         action(group, "frame_count", true, Some("u"), move |_, _| {
         });
         action(group, "is_dirty", true, Some("b"), move |_, _| {
+        });
+        action(group, "ligcopy", true, None, move |_, _| {
+        });
+        action(group, "lightingcopy", true, None, move |_, _| {
+        });
+        action(group, "sprite.lightingcopy", true, None, move |_, _| {
+        });
+        action(group, "lighting.paste", true, None, move |_, _| {
         });
     }
 
@@ -1128,26 +1162,18 @@ impl SpriteInfo {
     }
 
     fn set_enable_animset_actions(&self, enable: bool) {
-        if let Some(a) = lookup_action(&self.sprite_actions, "select_hd") {
-            a.set_enabled(enable);
-        }
-        if let Some(a) = lookup_action(&self.sprite_actions, "select_hd2") {
-            a.set_enabled(enable);
-        }
-        if let Some(a) = lookup_action(&self.sprite_actions, "select_sd") {
+        if let Some(a) = lookup_action(&self.sprite_actions, "select_sd_hd") {
             a.set_enabled(enable);
         }
     }
 
     fn select_sprite(&self, index: usize) {
-        let has_mainsd;
         let sprite = {
             let mut files = match self.files.try_lock() {
                 Ok(o) => o,
                 _ => return,
             };
             files.close_opened();
-            has_mainsd = files.mainsd().is_some();
             files.sprites().get(index).cloned()
         };
         let sprite = match sprite {
@@ -1167,9 +1193,6 @@ impl SpriteInfo {
                 writeln!(buf, "HD: {}", s.hd_filename.to_string_lossy()).unwrap();
                 writeln!(buf, "HD2: {}", s.hd2_filename.to_string_lossy()).unwrap();
                 self.set_enable_animset_actions(true);
-                if let Some(a) = lookup_action(&self.sprite_actions, "select_sd") {
-                    a.set_enabled(has_mainsd);
-                }
                 self.file_list.set_text(&buf);
             }
             SpriteFiles::DdsGrp(_) => {
@@ -1192,14 +1215,16 @@ impl SpriteInfo {
     }
 }
 
+fn menu_item_with_accel(name: &str, action: &str, accel: &str) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(name), Some(action));
+    if accel != "" {
+        item.set_attribute_value("accel", Some(&accel.to_variant()));
+    }
+    item
+}
+
 fn create_menu() -> gio::Menu {
-    let with_accel = |name: &str, action: &str, accel: &str| {
-        let item = gio::MenuItem::new(Some(name), Some(action));
-        if accel != "" {
-            item.set_attribute_value("accel", Some(&accel.to_variant()));
-        }
-        item
-    };
+    use self::menu_item_with_accel as with_accel;
 
     let menu = gio::Menu::new();
     let file_menu = {
@@ -1286,7 +1311,7 @@ fn save() -> Result<(), Error> {
 }
 
 // Return true if the user didn't press cancel
-fn check_unsaved_files() -> bool {
+async fn check_unsaved_files() -> bool {
     let has_changes = {
         let files = STATE.with(|x| {
             let state = x.borrow();
@@ -1298,24 +1323,18 @@ fn check_unsaved_files() -> bool {
     if has_changes {
         let ui = ui();
         let msg = format!("Save changes made to open files?");
-        let dialog = gtk::MessageDialog::new(
-            Some(&ui.main_window),
-            gtk::DialogFlags::MODAL,
-            gtk::MessageType::Question,
-            gtk::ButtonsType::None,
-            &msg,
-        );
-        dialog.add_button("Save", gtk::ResponseType::Other(1));
-        dialog.add_button("Discard changes", gtk::ResponseType::Other(2));
-        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-        let result = dialog.run();
-        dialog.close();
+        let dialog = gtk::AlertDialog::builder()
+            .buttons(&["Save", "Discard changes", "Cancel"][..])
+            .modal(true)
+            .message(&msg)
+            .build();
+        let result = dialog.choose_future(Some(&ui.main_window)).await;
         match result {
-            gtk::ResponseType::Other(1) => {
+            Ok(0) => {
                 let result = save();
                 result.is_ok()
             }
-            gtk::ResponseType::Other(2) => true,
+            Ok(1) => true,
             _ => false,
         }
     } else {
@@ -1333,26 +1352,32 @@ fn create_actions(app: &gtk::Application, main_window: &gtk::Window) {
         app.add_action(&action);
         action
     }
-    main_window.connect_delete_event(|_, _| {
-        if check_unsaved_files() {
-            Inhibit(false)
-        } else {
-            Inhibit(true)
-        }
+    let a = app.clone();
+    main_window.connect_close_request(move |_| {
+        a.activate_action("exit", None);
+        Propagation::Stop
     });
     let a = app.clone();
     action(app, "exit", true, move |_, _| {
-        if check_unsaved_files() {
-            a.quit()
-        }
+        let a = a.clone();
+        let task = async move {
+            if check_unsaved_files().await {
+                a.quit()
+            }
+        };
+        glib::MainContext::default().spawn_local(task);
     });
     let w = main_window.clone();
     action(app, "open", true, move |_, _| {
-        if check_unsaved_files() {
-            if let Some(filename) = open_file_dialog(&w) {
-                open(&filename);
+        let w = w.clone();
+        let task = async move {
+            if check_unsaved_files().await {
+                if let Some(filename) = open_file_dialog(&w).await {
+                    open(&filename);
+                }
             }
-        }
+        };
+        glib::MainContext::default().spawn_local(task);
     });
     action(app, "save", false, move |_, _| {
         let _ = save();
@@ -1457,7 +1482,7 @@ fn open(filename: &Path) {
                 });
             }
             ui.info.draw_clear_all();
-            ui.info.sprite_actions.activate_action("select_sd", None);
+            ui.info.sprite_actions.activate_action("select_sd_hd", Some(&Variant::from("sd")));
             let index = index.unwrap_or(0);
             ui.info.select_sprite(index);
             ui.list.list.select(index);
@@ -1469,7 +1494,7 @@ fn open(filename: &Path) {
     }
 }
 
-fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
+async fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     let dialog = gtk::FileChooserNative::new(
         Some("Open..."),
         Some(parent),
@@ -1478,7 +1503,8 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
         Some("Cancel")
     );
     if let Some(path) = select_dir::read_config_entry("open_file") {
-        dialog.set_current_folder(&path);
+        let file = gio::File::for_path(&path);
+        let _ = dialog.set_current_folder(Some(&file));
     }
     dialog.set_select_multiple(false);
     let filter = gtk::FileFilter::new();
@@ -1493,18 +1519,25 @@ fn open_file_dialog(parent: &gtk::Window) -> Option<PathBuf> {
     dialog.add_filter(&filter);
     //dialog.add_button("Open", gtk::ResponseType::Accept.into());
     //dialog.add_button("Cancel", gtk::ResponseType::Cancel.into());
-    let result: gtk::ResponseType = dialog.run().into();
-    let result = if result == gtk::ResponseType::Accept {
-        if let Some(path) = dialog.filename() {
+    let (send, recv) = async_channel::unbounded();
+    dialog.connect_response(move |_, response| {
+        let _ = send.send_blocking(response);
+    });
+    dialog.show();
+    let res = recv.recv().await.ok()?;
+
+    let result = if res == gtk::ResponseType::Accept {
+        let file = dialog.file();
+        let filename = file.and_then(|x| x.path());
+        if let Some(ref path) = filename {
             if let Some(parent) = path.parent() {
                 select_dir::set_config_entry("open_file", &*parent.to_string_lossy());
             }
         }
-        dialog.filename()
+        filename
     } else {
         None
     };
-    dialog.destroy();
     result
 }
 
@@ -1540,31 +1573,37 @@ fn create_ui(app: &gtk::Application) -> Ui {
     app.set_menubar(Some(&create_menu()));
 
     let window = gtk::ApplicationWindow::new(app);
+    window.set_show_menubar(true);
 
     let box1 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let files = {
         STATE.with(|x| x.borrow().files.clone())
     };
-    let info = SpriteInfo::new(&files);
+    let info = SpriteInfo::new(&files, &window);
     let list = SpriteList::new(info.clone());
-    box1.pack_start(&list.widget(), false, false, 0);
-    box1.pack_start(&info.widget(), true, true, 0);
-    window.add(&box1);
+    box1.append(&list.widget());
+    info.widget().set_hexpand(true);
+    box1.append(&info.widget());
+    window.set_child(Some(&box1));
 
     let w = window.clone();
     info.on_dirty_update(move |dirty| {
         STATE.with(|x| {
             let state = x.borrow();
             let files = state.files.lock();
-            w.set_title(&title(files.root_path(), dirty));
+            w.set_title(Some(&title(files.root_path(), dirty)));
         });
     });
-    window.set_title(&title(None, false));
-    window.resize(800, 600);
+    window.set_title(Some(&title(None, false)));
 
-    let style_ctx = window.style_context();
     let css = crate::get_css_provider();
-    style_ctx.add_provider(&css, 600 /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */);
+    if let Some(display) = gdk::Display::default() {
+        gtk::StyleContext::add_provider_for_display(
+            &display,
+            &css,
+            600, /* GTK_STYLE_PROVIDER_PRIORITY_APPLICATION */
+        );
+    }
 
     Ui {
         app: app.clone(),
@@ -1580,36 +1619,28 @@ fn label_section<O: IsA<gtk::Widget>>(name: &str, obj: &O) -> gtk::Box {
     obj.set_margin_bottom(obj.margin_bottom() + 2);
     obj.set_margin_start(obj.margin_start() + 2);
     obj.set_margin_end(obj.margin_end() + 2);
-    frame.add(obj);
+    frame.set_child(Some(obj));
     let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    bx.pack_start(&frame, false, false, 0);
+    bx.append(&frame);
     bx
 }
 
 fn info_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
-    let dialog = gtk::MessageDialog::new(
-        Some(window),
-        gtk::DialogFlags::MODAL,
-        gtk::MessageType::Info,
-        gtk::ButtonsType::None,
-        msg.as_ref(),
-    );
-    dialog.add_button("Ok", gtk::ResponseType::Ok);
-    dialog.run();
-    dialog.close();
+    let dialog = gtk::AlertDialog::builder()
+        .buttons(&["Ok"][..])
+        .modal(true)
+        .message(msg.as_ref())
+        .build();
+    dialog.show(Some(window));
 }
 
 fn error_msg_box<W: IsA<gtk::Window>, S: AsRef<str>>(window: &W, msg: S) {
-    let dialog = gtk::MessageDialog::new(
-        Some(window),
-        gtk::DialogFlags::MODAL,
-        gtk::MessageType::Error,
-        gtk::ButtonsType::None,
-        msg.as_ref(),
-    );
-    dialog.add_button("Ok", gtk::ResponseType::Ok);
-    dialog.run();
-    dialog.close();
+    let dialog = gtk::AlertDialog::builder()
+        .buttons(&["Ok"][..])
+        .modal(true)
+        .message(msg.as_ref())
+        .build();
+    dialog.show(Some(window));
 }
 
 fn error_from_panic(e: Box<dyn std::any::Any + Send + 'static>) -> Error {
