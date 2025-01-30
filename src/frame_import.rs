@@ -547,8 +547,12 @@ impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
             self.image_width = self.image_width.max(width);
             self.image_height = self.image_height.max(height);
             let bounds = if alpha_bounding_box {
-                let bounds = rgba_bounds(&data, width, height);
+                let mut bounds = rgba_bounds(&data, width, height);
                 if bounds.right > bounds.left && bounds.bottom > bounds.top {
+                    // Round left / top bounds to even. HD2 imports don't like
+                    // odd x/y.
+                    bounds.left &= !1;
+                    bounds.top &= !1;
                     while self.max_frame_bounds.len() <= f as usize {
                         self.max_frame_bounds.push(None);
                     }
@@ -599,6 +603,7 @@ impl<'a, F: Fn(f32) + Sync> LayerAddCtx<'a, F> {
                 bounded.coords.y_offset.saturating_add(y_offset) * scale as i32;
             bounded.coords.width *= scale;
             bounded.coords.height *= scale;
+            debug!("Adding {scale} frame {f} {} {}", bounded.coords.x_offset, bounded.coords.y_offset);
             self.layout.add_frame(layer, f as usize, bounded.data, bounded.coords);
         }
         Ok(())

@@ -227,6 +227,7 @@ impl Layout {
             };
 
             let entry = final_map.entry(frames);
+            debug!("Layout: Adding frame {f} to {base_x_offset} {base_y_offset}");
             entry.or_insert_with(Default::default).push((f, FrameOffset {
                 x: base_x_offset,
                 y: base_y_offset,
@@ -454,6 +455,14 @@ fn encode_dxt5(
         let frame_height = frame.height / scale;
         let width_aligned = align4((place_x & 3) + frame_width);
         let height_aligned = align4((place_y & 3) + frame_height);
+
+        debug!(
+            "Encoding to x = ({} + {}) / {} = {}, y = ({} + {}) / {} = {}",
+            place.x, offset.0, scale,
+            (place.x + offset.0 as u32) / scale,
+            place.y, offset.1, scale,
+            (place.y + offset.1 as u32) / scale,
+        );
 
         tmp_buf.clear();
         tmp_buf.resize((width_aligned * height_aligned) as usize, 0);
