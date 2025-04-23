@@ -633,11 +633,13 @@ impl<'a> File<'a> {
 
 impl<'a> FileLocation<'a> {
     pub fn values_or_ref(&self) -> Option<anim::ValuesOrRef> {
-        Some(match *self {
+        match *self {
             FileLocation::Multiple(sprite, mainsd) => mainsd.values_or_ref(sprite),
-            FileLocation::Separate(file) => anim::ValuesOrRef::Values(file.sprite_values(0)?),
-            FileLocation::DdsGrp(_) => return None,
-        })
+            FileLocation::Separate(file) => {
+                Some(anim::ValuesOrRef::Values(file.sprite_values(0)?))
+            }
+            FileLocation::DdsGrp(_) => None,
+        }
     }
 
     pub fn frames(&self) -> Option<&'a [anim::Frame]> {

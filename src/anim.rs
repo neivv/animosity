@@ -408,7 +408,16 @@ impl Anim {
             let values = match data_changes.iter().find(|x| x.0 == i as usize) {
                 Some(&(_, ref vals)) => vals,
                 None => {
-                    store = values_or_ref_sd(&self.sprites, i as usize);
+                    store = match values_or_ref_sd(&self.sprites, i as usize) {
+                        Some(s) => s,
+                        None => {
+                            warn!("No value for sprite {i}");
+                            ValuesOrRef::Values(SpriteValues {
+                                width: 8,
+                                height: 8,
+                            })
+                        }
+                    };
                     &store
                 }
             };
@@ -516,7 +525,7 @@ impl Anim {
         sprite_values_sd(&self.sprites, sprite)
     }
 
-    pub fn values_or_ref(&self, sprite: usize) -> ValuesOrRef {
+    pub fn values_or_ref(&self, sprite: usize) -> Option<ValuesOrRef> {
         values_or_ref_sd(&self.sprites, sprite)
     }
 
@@ -568,10 +577,10 @@ fn sprite_data_sd<'a>(sprites: &'a [SpriteType], sprite: usize) -> Option<&'a Sp
     }
 }
 
-fn values_or_ref_sd(sprites: &[SpriteType], index: usize) -> ValuesOrRef {
-    match sprites[index] {
-        SpriteType::Ref(r) => ValuesOrRef::Ref(r),
-        SpriteType::Data(ref d) => ValuesOrRef::Values(d.values),
+fn values_or_ref_sd(sprites: &[SpriteType], index: usize) -> Option<ValuesOrRef> {
+    match *sprites.get(index)? {
+        SpriteType::Ref(r) => Some(ValuesOrRef::Ref(r)),
+        SpriteType::Data(ref d) => Some(ValuesOrRef::Values(d.values)),
     }
 }
 
