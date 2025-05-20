@@ -90,6 +90,9 @@ impl LayoutResult {
                     anim::TextureFormat::Dxt5 => {
                         encode_dxt5(&self.frames, layer, tex_width, tex_height, scale)
                     }
+                    anim::TextureFormat::Rgba => {
+                        encode_dds_rgba(&self.frames, layer, tex_width, tex_height, scale)
+                    }
                     anim::TextureFormat::Monochrome => {
                         encode_monochrome(&self.frames, layer, tex_width, tex_height, scale)
                     }
@@ -417,15 +420,53 @@ fn encode_monochrome(
             (place.y + offset.1 as u32) / scale * width + (place.x + offset.0 as u32) / scale
         ) as usize + 4;
         let frame_width = frame.width / scale;
-        for c in frame.data.chunks(frame_width as usize * 4) {
+        for c in frame.data.chunks_exact(frame_width as usize * 4) {
             let out = &mut out[out_pos..out_pos + frame_width as usize];
-            for (out, x) in out.iter_mut().zip(c.chunks(4)) {
+            for (out, x) in out.iter_mut().zip(c.chunks_exact(4)) {
                 *out = if x[3] < 128 { 0 } else { 255 };
             }
             out_pos += width as usize;
         }
     }
     out
+}
+
+fn encode_dds_rgba(
+    frames: &[(Vec<(usize, FrameOffset)>, LayerFrames, TexCoords)],
+    layer: usize,
+    width: u32,
+    height: u32,
+    scale: u32,
+) -> Vec<u8> {
+    let mut out = vec![0; 4 * (width * height) as usize];
+    for (_, f, place) in frames {
+        let &(ref frame, ref offset) = &f.frames[layer];
+        if frame.data.is_empty() {
+            continue;
+        }
+        let mut out_pos = 4 * (
+            (place.y + offset.1 as u32) / scale * width + (place.x + offset.0 as u32) / scale
+        ) as usize;
+        let frame_width = frame.width / scale;
+        for c in frame.data.chunks_exact(4 * frame_width as usize) {
+            let out = &mut out[out_pos..out_pos + 4 * frame_width as usize];
+            out.copy_from_slice(c);
+            out_pos += 4 * width as usize;
+        }
+    }
+
+    let mut dds = Dds::new_d3d(NewD3dParams {
+        height,
+        width,
+        depth: None,
+        format: D3DFormat::A8B8G8R8,
+        mipmap_levels: None,
+        caps2: None,
+    }).unwrap();
+    dds.data = out;
+    let mut dds_out = Vec::new();
+    dds.write(&mut dds_out).unwrap();
+    dds_out
 }
 
 fn encode_dxt5(
@@ -636,6 +677,7 @@ pub fn encode(rgba: &[u8], width: u32, height: u32, format: anim::TextureFormat)
     match format {
         anim::TextureFormat::Dxt1 => encode_dxt1(&frames, 0, width, height, 1),
         anim::TextureFormat::Dxt5 => encode_dxt5(&frames, 0, width, height, 1),
+        anim::TextureFormat::Rgba => encode_dds_rgba(&frames, 0, width, height, 1),
         anim::TextureFormat::Monochrome => encode_monochrome(&frames, 0, width, height, 1),
     }
 }

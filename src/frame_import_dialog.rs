@@ -84,6 +84,7 @@ pub fn frame_import_dialog(sprite_info: &Arc<SpriteInfo>, parent: &gtk::Applicat
     static FORMATS_DDSGRP: &[(Option<anim::TextureFormat>, &str)] = &[
         (Some(anim::TextureFormat::Dxt1), "DXT1"),
         (Some(anim::TextureFormat::Dxt5), "DXT5"),
+        (Some(anim::TextureFormat::Rgba), "RGBA"),
         (Some(anim::TextureFormat::Monochrome), "Monochrome"),
         (None, "Paletted"),
     ];

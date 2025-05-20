@@ -73,6 +73,7 @@ pub struct Texture {
 pub enum TextureFormat {
     Dxt1,
     Dxt5,
+    Rgba, // D3DFormat::A8B8G8R8, idk if it always is but at least here it is stored in rgba order.
     Monochrome,
 }
 
@@ -665,6 +666,7 @@ fn decode_dxt(
     let mut data = match format {
         D3DFormat::DXT1 => decode_dxt1(&data, aligned_width, aligned_height)?,
         D3DFormat::DXT5 => decode_dxt5(&data, aligned_width, aligned_height)?,
+        D3DFormat::A8B8G8R8 => return Ok(Vec::from(data)),
         _ => return Err(ErrKind::UnsupportedDdsFormat(format).into()),
     };
     // The decoding functions only work with multiplies of 4,
